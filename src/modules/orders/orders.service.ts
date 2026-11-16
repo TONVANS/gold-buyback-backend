@@ -20,6 +20,22 @@ import type {
 
 const D = (value: Decimal) => new Prisma.Decimal(value.toFixed());
 
+/** ແປງສະຕຣິງວັນທີ (YYYY-MM-DD) ໃຫ້ມີເວລາປັດຈຸບັນຕິດນຳ ເພື່ອໃຫ້ Timeline ສະແດງເວລາທີ່ກົດບັນທຶກໄດ້. */
+function withCurrentTime(dateInput: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateInput.trim());
+  if (!m) return new Date(dateInput);
+  const now = new Date();
+  return new Date(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+}
+
 /**
  * TOR §7 — Status Workflow Order. Each status may only advance to the next,
  * or be cancelled; skipping a step would let an order be handed over before
@@ -366,10 +382,10 @@ export class OrdersService {
             ? { sentToSmithAt: new Date() }
             : {}),
           ...(dto.receivedFromSmithAt
-            ? { receivedFromSmithAt: new Date(dto.receivedFromSmithAt) }
+            ? { receivedFromSmithAt: withCurrentTime(dto.receivedFromSmithAt) }
             : {}),
           ...(dto.customerPickupAt
-            ? { customerPickupAt: new Date(dto.customerPickupAt) }
+            ? { customerPickupAt: withCurrentTime(dto.customerPickupAt) }
             : {}),
           ...(dto.status === 'COMPLETED' ? { completedAt: new Date() } : {}),
           statusHistory: {
@@ -387,6 +403,7 @@ export class OrdersService {
           supplier: true,
           receipts: { include: { bankAccount: true } },
           lines: { include: { goldItem: true }, orderBy: { sortOrder: 'asc' } },
+          statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } },
         },
       });
 
@@ -599,6 +616,7 @@ export class OrdersService {
           receipts: { include: { bankAccount: true } },
           // ລາຍການໃນບິນ — ປຸ່ມ View ຕ້ອງເຫັນຄົບທຸກແຖວ.
           lines: { include: { goldItem: true }, orderBy: { sortOrder: 'asc' } },
+          statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip: range.skip,
@@ -1099,6 +1117,26 @@ export class OrdersService {
           ...(dto.supplierId !== undefined ? { supplierId: dto.supplierId || null } : {}),
           ...(dto.note !== undefined ? { note: dto.note || null } : {}),
           ...(dto.status ? { status: dto.status } : {}),
+          ...(dto.status && dto.status !== order.status
+            ? {
+                ...(dto.status === 'SENT_TO_SMITH' && !order.sentToSmithAt
+                  ? { sentToSmithAt: new Date() }
+                  : {}),
+                ...(dto.status === 'RECEIVED_FROM_SMITH' && !order.receivedFromSmithAt
+                  ? { receivedFromSmithAt: new Date() }
+                  : {}),
+                ...(dto.status === 'COMPLETED' && !order.completedAt
+                  ? { completedAt: new Date() }
+                  : {}),
+                statusHistory: {
+                  create: {
+                    fromStatus: order.status,
+                    toStatus: dto.status,
+                    changedById: user.id,
+                  },
+                },
+              }
+            : {}),
         },
         include: {
           customer: true,
@@ -1106,6 +1144,7 @@ export class OrdersService {
           supplier: true,
           lines: { include: { goldItem: true } },
           receipts: { include: { bankAccount: true } },
+          statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } },
         },
       });
 

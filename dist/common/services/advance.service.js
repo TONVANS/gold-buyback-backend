@@ -199,6 +199,7 @@ let AdvanceService = class AdvanceService {
                             supplier: true,
                             receipts: true,
                             lines: { include: { goldItem: true }, orderBy: { sortOrder: 'asc' } },
+                            statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } },
                         },
                     },
                     bankAccount: true,
