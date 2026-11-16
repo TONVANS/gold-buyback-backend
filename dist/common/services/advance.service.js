@@ -145,32 +145,48 @@ let AdvanceService = class AdvanceService {
      */
     async history(query, user) {
         const range = this.range.resolve(query, user);
-        const dayWin = history_range_service_1.HistoryRangeService.dayWindow(range);
-        const [advGroups, rangeOrders] = await Promise.all([
-            this.prisma.advanceLedger.groupBy({
-                by: ['orderId', 'currency'],
-                where: { deletedAt: null },
-                _sum: { amountIn: true, amountOut: true },
-            }),
-            this.prisma.advanceLedger.findMany({
-                where: { deletedAt: null, businessDate: dayWin },
-                select: { orderId: true },
-                distinct: ['orderId'],
-            }),
-        ]);
-        const unsettledOrderIds = advGroups
-            .filter((g) => toDec(g._sum.amountIn).gt(toDec(g._sum.amountOut)))
-            .map((g) => g.orderId);
-        const activeOrderIds = Array.from(new Set([...rangeOrders.map((r) => r.orderId), ...unsettledOrderIds]));
-        const where = {
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const searchWhere = history_range_service_1.HistoryRangeService.orderSearchWhere(query.search);
+        const orderFilter = {
             deletedAt: null,
-            order: { deletedAt: null },
-            OR: [
-                { businessDate: dayWin },
-                { order: { status: { notIn: ['COMPLETED', 'CANCELLED'] } } },
-                ...(activeOrderIds.length > 0 ? [{ orderId: { in: activeOrderIds } }] : []),
-            ],
+            ...(searchWhere ? searchWhere : {}),
         };
+        let where;
+        if (timeWin) {
+            where = {
+                deletedAt: null,
+                order: orderFilter,
+                createdAt: timeWin,
+            };
+        }
+        else {
+            const dayWin = history_range_service_1.HistoryRangeService.dayWindow(range);
+            const [advGroups, rangeOrders] = await Promise.all([
+                this.prisma.advanceLedger.groupBy({
+                    by: ['orderId', 'currency'],
+                    where: { deletedAt: null },
+                    _sum: { amountIn: true, amountOut: true },
+                }),
+                this.prisma.advanceLedger.findMany({
+                    where: { deletedAt: null, businessDate: dayWin },
+                    select: { orderId: true },
+                    distinct: ['orderId'],
+                }),
+            ]);
+            const unsettledOrderIds = advGroups
+                .filter((g) => toDec(g._sum.amountIn).gt(toDec(g._sum.amountOut)))
+                .map((g) => g.orderId);
+            const activeOrderIds = Array.from(new Set([...rangeOrders.map((r) => r.orderId), ...unsettledOrderIds]));
+            where = {
+                deletedAt: null,
+                order: orderFilter,
+                OR: [
+                    { businessDate: dayWin },
+                    { order: { status: { notIn: ['COMPLETED', 'CANCELLED'] } } },
+                    ...(activeOrderIds.length > 0 ? [{ orderId: { in: activeOrderIds } }] : []),
+                ],
+            };
+        }
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.advanceLedger.findMany({
                 where,

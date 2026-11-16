@@ -13,7 +13,11 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { HistoryRangeDto } from '../../../common/dto/history-range.dto';
+import {
+  BlankIsAbsent,
+  HistoryRangeDto,
+  TimeSearchHistoryRangeDto,
+} from '../../../common/dto/history-range.dto';
 import { IsDecimalString } from '../../../common/dto/decimal-string.validator';
 
 /** §3.7 — Module ລາຍການ Bank */
@@ -68,9 +72,11 @@ export class IncomeExpenseHistoryDto extends HistoryRangeDto {
   @IsOptional() @IsIn(['INCOME', 'EXPENSE']) kind?: 'INCOME' | 'EXPENSE';
 }
 
-export class ConsignmentListDto extends HistoryRangeDto {
+export class ConsignmentListDto extends TimeSearchHistoryRangeDto {
   @IsOptional() @IsIn(['HELD', 'RETURNED']) status?: 'HELD' | 'RETURNED';
 }
+
+export class AdvanceHistoryDto extends TimeSearchHistoryRangeDto {}
 
 export class CreateIncomeExpenseDto {
   @IsString() categoryId: string;
@@ -166,4 +172,12 @@ export class SettleApArCashDto {
   @IsIn(['LAK', 'THB', 'USD']) currency: 'LAK' | 'THB' | 'USD';
   @IsDecimalString({ labelLo: 'ຈຳນວນເງິນ' }) amount: string;
   @IsOptional() @IsString() @MaxLength(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }) note?: string;
+}
+
+/** §9.3 / §9.4 — History filters for AP (Cash) / AR (Cash). */
+export class ApArCashHistoryDto extends TimeSearchHistoryRangeDto {
+  @IsOptional() @BlankIsAbsent() @IsString() partnerId?: string;
+  @IsOptional() @BlankIsAbsent() @IsString() partner_id?: string;
+  @IsOptional() @BlankIsAbsent() @IsIn(['LAK', 'THB', 'USD']) currency?: 'LAK' | 'THB' | 'USD';
+  @IsOptional() @BlankIsAbsent() @IsString() refType?: string;
 }

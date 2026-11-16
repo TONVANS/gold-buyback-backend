@@ -26,8 +26,20 @@ const dry = process.argv.includes('--dry');
 /** Must stay in step with SkusService.buildFullSkuName. */
 function buildFullSkuName(nameLo: string, weightG: string): string {
   const w = dec(weightG);
-  const baht = trimTrailingZeros(w.div(GRAMS_PER_BAHT).toDecimalPlaces(2).toFixed());
-  return `${nameLo.trim()} ${baht} ບາດ (${w.toDecimalPlaces(3).toFixed(3)} g)`;
+  const n = w.toNumber();
+  let unit: string;
+  if (n === 7.5) unit = '2ສະຫຼຶງ';
+  else if (n === 3.75) unit = '1ສະຫຼຶງ';
+  else if (n === 1.87 || n === 1.875) unit = '5ຫຸນ';
+  else if (n === 1.12 || n === 1.125) unit = '3ຫຸນ';
+  else if (n === 0.75) unit = '2ຫຸນ';
+  else if (n === 0.37 || n === 0.375) unit = '1ຫຸນ';
+  else if (n === 1) unit = '1ກຼາມ';
+  else {
+    const baht = trimTrailingZeros(w.div(GRAMS_PER_BAHT).toDecimalPlaces(2).toFixed());
+    unit = `${baht} ບາດ`;
+  }
+  return `${nameLo.trim()} ${unit}`;
 }
 
 async function main() {

@@ -13,7 +13,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { HistoryRangeDto } from '../../../common/dto/history-range.dto';
+import { TimeSearchHistoryRangeDto } from '../../../common/dto/history-range.dto';
 import { IsDecimalString } from '../../../common/dto/decimal-string.validator';
 
 export class OrderReceiptDto {
@@ -45,11 +45,11 @@ export class OrderLineDto {
 /**
  * ຕົວກອງຂອງລາຍການປະຫວັດ.
  *
- * ຕ້ອງສືບທອດ `HistoryRangeDto` ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
+ * ຕ້ອງສືບທອດ `TimeSearchHistoryRangeDto` (`HistoryRangeDto`) ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
  * query ໃດທີ່ບໍ່ມີໃນ DTO ຈະຖືກປະຕິເສດ 400 ເຖິງແມ່ນ handler ຈະອ່ານມັນດ້ວຍ
  * `@Query('...')` ກໍຕາມ.
  */
-export class ListOrderDto extends HistoryRangeDto {
+export class ListOrderDto extends TimeSearchHistoryRangeDto {
   @IsOptional()
   @IsIn([
     'ORDER_PLACED',

@@ -23,6 +23,7 @@ const cash_service_1 = require("../cash/cash.service");
 const D = (value) => new client_1.Prisma.Decimal(value.toFixed());
 const toDec = (value) => (0, domain_1.dec)(value?.toFixed() ?? 0);
 const CURRENCIES = ['LAK', 'THB', 'USD'];
+const NON_APAR_PARTNER_CODES = new Set(['CABINET', 'CASHIER', 'WITHDRAW']);
 /**
  * ບັນຊີທີ່ລາຍງານ COH / ຄວາມຮັ່ງມີ ຊອກດ້ວຍ code (`ledger.service.ts`) —
  * ຊື່ແກ້ໄດ້ ແຕ່ລຶບ ຫຼື ປິດບໍ່ໄດ້, ບໍ່ດັ່ງນັ້ນເງິນຝາກຂອງບັນຊີນັ້ນຫຼຸດອອກຈາກ
@@ -658,20 +659,43 @@ let FinanceService = class FinanceService {
     }
     async consignments(status, query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const q = query.search?.trim();
+        const searchWhere = q
+            ? {
+                OR: [
+                    { customer: { phone: { contains: q, mode: 'insensitive' } } },
+                    { billId: { contains: q, mode: 'insensitive' } },
+                    { staffName: { contains: q, mode: 'insensitive' } },
+                    { code: { contains: q, mode: 'insensitive' } },
+                    { customerName: { contains: q, mode: 'insensitive' } },
+                ],
+            }
+            : undefined;
         /*
          * ຄຳທີ່ຍັງຝາກຢູ່ ຕ້ອງຄ້າງຢູ່ໜ້າຈໍຈົນກວ່າຈະສົ່ງຄືນ.
          *
          * ຖ້າກອງຕາມວັນທີສ້າງຢ່າງດຽວ ລາຍການທີ່ຮັບຝາກມື້ວານຈະຫາຍໄປຈາກໜ້າຈໍພໍ
          * ຂຶ້ນມື້ໃໝ່ ທັງທີ່ຄຳຍັງຢູ່ໃນຮ້ານ — ພະນັກງານຈຶ່ງບໍ່ຮູ້ວ່າຍັງຖືຂອງໃຜຢູ່.
          * ສະນັ້ນ: ລາຍການໃນຊ່ວງວັນທີ ບວກກັບ ລາຍການທີ່ຍັງ HELD ທັງໝົດ.
+         * ເມື່ອມີຕົວກອງຊ່ວງເວລາ (start_time / end_time), ກອງຕາມຊ່ວງ timestamp ທີ່ຂໍໂດຍກົງ.
          */
-        const inRange = { createdAt: history_range_service_1.HistoryRangeService.window(range) };
+        const inRange = { createdAt: timeWin ?? history_range_service_1.HistoryRangeService.window(range) };
         const stillHeld = { status: 'HELD' };
+        const dateOrStatusWhere = timeWin
+            ? {
+                ...inRange,
+                ...(status ? { status } : {}),
+            }
+            : status
+                ? { status, ...(status === 'HELD' ? {} : inRange) }
+                : { OR: [inRange, stillHeld] };
+        const andClauses = [dateOrStatusWhere];
+        if (searchWhere)
+            andClauses.push(searchWhere);
         const where = {
             deletedAt: null,
-            ...(status
-                ? { status, ...(status === 'HELD' ? {} : inRange) }
-                : { OR: [inRange, stillHeld] }),
+            AND: andClauses,
         };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.consignment.findMany({
@@ -736,22 +760,26 @@ let FinanceService = class FinanceService {
     /* ---------------------------------------------------------------- *
      * §9.3 / §9.4 — +Add AP Cash / +Add AR Cash, and settlement
      * ---------------------------------------------------------------- */
-    /** Raise a new AP or AR against a Supplier. */
+    /** Raise a new AP or AR against a Supplier/Partner (accrual — no cash/bank movement). */
     async addApArEntry(side, dto, user) {
         const amount = (0, domain_1.dec)(dto.amount);
         if (!amount.isFinite() || amount.lte(0)) {
             throw new common_1.BadRequestException('ຈຳນວນເງິນຕ້ອງໃຫຍ່ກວ່າ 0');
         }
         const [partner, category] = await Promise.all([
-            this.prisma.partnerSource.findFirst({ where: { id: dto.partnerId, deletedAt: null } }),
-            this.prisma.apArCashCategory.findFirst({ where: { id: dto.categoryId, deletedAt: null } }),
+            this.prisma.partnerSource.findFirst({
+                where: { id: dto.partnerId, deletedAt: null, isActive: true },
+            }),
+            this.prisma.apArCashCategory.findFirst({
+                where: { id: dto.categoryId, deletedAt: null, isActive: true },
+            }),
         ]);
         if (!partner)
-            throw new common_1.NotFoundException('ບໍ່ພົບ Supplier');
+            throw new common_1.NotFoundException('ບໍ່ພົບ Supplier / ຄູ່ຄ້າ');
         if (!category)
             throw new common_1.NotFoundException('ບໍ່ພົບປະເພດລາຍການ');
-        if (dto.method === 'BANK' && !dto.bankAccountId) {
-            throw new common_1.BadRequestException('ກະລຸນາເລືອກທະນາຄານ');
+        if (category.side !== null && category.side !== side) {
+            throw new common_1.BadRequestException(`ປະເພດລາຍການ "${category.nameLo}" ໃຊ້ໄດ້ສະເພາະດ້ານ ${category.side}`);
         }
         const reason = side === 'AP' ? 'MANUAL_AP' : 'MANUAL_AR';
         return this.prisma.$transaction(async (tx) => {
@@ -763,8 +791,9 @@ let FinanceService = class FinanceService {
                 categoryId: dto.categoryId,
                 note: dto.note,
                 createdById: user.id,
-                method: dto.method ?? null,
-                bankAccountId: dto.method === 'BANK' ? dto.bankAccountId : null,
+                // Adding an AP/AR obligation is accrual-only; money moves when settled.
+                method: null,
+                bankAccountId: null,
             });
             await this.audit.record({
                 actorId: user.id, action: 'CREATE', entity: 'CashApArLedger', entityId: row?.id,
@@ -772,6 +801,52 @@ let FinanceService = class FinanceService {
                 summary: `ເພີ່ມ ${side} (Cash) ${partner.nameLo} — ${amount.toFixed(0)} ${dto.currency}`,
             }, tx);
             return row;
+        });
+    }
+    /**
+     * Soft-delete a manual accrual AP/AR entry (before settlement consumes it),
+     * then recompute running balances for that partner stream.
+     */
+    async deleteApArEntry(side, id, user) {
+        const entry = await this.prisma.cashApArLedger.findFirst({
+            where: { id, side, deletedAt: null },
+            include: { partner: true },
+        });
+        if (!entry)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການ AP/AR');
+        if (entry.refType !== 'ADJUSTMENT' || entry.refId !== null || toDec(entry.amountIn).lte(0)) {
+            throw new common_1.BadRequestException('ສາມາດລຶບໄດ້ສະເພາະລາຍການຕັ້ງໜີ້ທີ່ເພີ່ມດ້ວຍມືເທົ່ານັ້ນ');
+        }
+        return this.prisma.$transaction(async (tx) => {
+            const lockKey = `cash_apar_settle:${side}:${entry.partnerId ?? ''}:${entry.currency}`;
+            await tx.$executeRaw `SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+            if (entry.partnerId) {
+                const outstanding = await this.partnerOutstanding(side, entry.partnerId, entry.currency, tx);
+                if (outstanding.minus(toDec(entry.amountIn)).lt(0)) {
+                    throw new common_1.BadRequestException('ລຶບບໍ່ໄດ້ — ຍອດນີ້ຖືກຊຳຣະໄປແລ້ວບາງສ່ວນ ຫຼື ທັງໝົດ');
+                }
+            }
+            const now = new Date();
+            const updated = await tx.cashApArLedger.update({
+                where: { id: entry.id },
+                data: { deletedAt: now },
+            });
+            await this.apar.recomputeCashRunningTotals(tx, side, entry.currency, entry.partnerId);
+            await this.audit.record({
+                actorId: user.id,
+                action: 'DELETE',
+                entity: 'CashApArLedger',
+                entityId: entry.id,
+                before: {
+                    side,
+                    partner: entry.partner?.nameLo ?? null,
+                    currency: entry.currency,
+                    amountIn: toDec(entry.amountIn).toFixed(),
+                },
+                after: { deletedAt: now.toISOString() },
+                summary: `ລຶບລາຍການ ${side} (Cash) ${entry.partner?.nameLo ?? ''} — ${toDec(entry.amountIn).toFixed(0)} ${entry.currency}`,
+            }, tx);
+            return updated;
         });
     }
     /**
@@ -793,25 +868,40 @@ let FinanceService = class FinanceService {
             where: { id: dto.partnerId, deletedAt: null },
         });
         if (!partner)
-            throw new common_1.NotFoundException('ບໍ່ພົບ Supplier');
-        const outstanding = await this.partnerOutstanding(side, dto.partnerId, dto.currency);
-        if (amount.gt(outstanding)) {
-            throw new common_1.BadRequestException(`ຈຳນວນເງິນເກີນຍອດຄ້າງ (${outstanding.toFixed(0)} ${dto.currency})`);
+            throw new common_1.NotFoundException('ບໍ່ພົບ Supplier / ຄູ່ຄ້າ');
+        if (dto.method === 'BANK') {
+            const bank = await this.prisma.bankAccount.findFirst({
+                where: { id: dto.bankAccountId, isActive: true },
+                select: { id: true },
+            });
+            if (!bank)
+                throw new common_1.BadRequestException('ບໍ່ພົບບັນຊີທະນາຄານ ຫຼື ຖືກປິດການນຳໃຊ້');
         }
         const day = await this.businessDay.current();
-        const reason = side === 'AP' ? 'MANUAL_AP_PAYMENT' : 'MANUAL_AR_RECEIPT';
         const moneyLeaves = side === 'AP';
-        if (moneyLeaves) {
-            await this.cash.assertSufficientFunds([
-                {
-                    method: dto.method,
-                    bankAccountId: dto.bankAccountId,
-                    currency: dto.currency,
-                    amount,
-                },
-            ], `ການຊຳລະ ${side} (Cash)`);
-        }
         return this.prisma.$transaction(async (tx) => {
+            const partnerLock = `cash_apar_settle:${side}:${dto.partnerId}:${dto.currency}`;
+            await tx.$executeRaw `SELECT pg_advisory_xact_lock(hashtext(${partnerLock}))`;
+            if (moneyLeaves) {
+                const fundsLock = `cash_out:${dto.method}:${dto.bankAccountId ?? ''}:${dto.currency}`;
+                await tx.$executeRaw `SELECT pg_advisory_xact_lock(hashtext(${fundsLock}))`;
+            }
+            const outstanding = await this.partnerOutstanding(side, dto.partnerId, dto.currency, tx);
+            if (amount.gt(outstanding)) {
+                throw new common_1.BadRequestException(`ຈຳນວນເງິນເກີນຍອດຄ້າງ (${outstanding.toFixed(0)} ${dto.currency})`);
+            }
+            if (moneyLeaves) {
+                await this.cash.assertSufficientFunds([
+                    {
+                        method: dto.method,
+                        bankAccountId: dto.bankAccountId,
+                        currency: dto.currency,
+                        amount,
+                    },
+                ], `ການຊຳລະ ${side} (Cash)`);
+            }
+            const cleanNote = dto.note?.trim();
+            const cashNote = `${side} (Cash) ${partner.nameLo}${cleanNote ? ` — ${cleanNote}` : ''}`;
             if (dto.method === 'CASH') {
                 await tx.cashTransaction.create({
                     data: {
@@ -821,7 +911,7 @@ let FinanceService = class FinanceService {
                         amount: D(amount),
                         refType: `${side}_CASH_SETTLEMENT`,
                         refId: dto.partnerId,
-                        note: `${side} (Cash) ${partner.nameLo}`,
+                        note: cashNote,
                         createdById: user.id,
                     },
                 });
@@ -836,7 +926,7 @@ let FinanceService = class FinanceService {
                         amount: D(amount),
                         refType: `${side}_CASH_SETTLEMENT`,
                         refId: dto.partnerId,
-                        note: `${side} (Cash) ${partner.nameLo}`,
+                        note: cashNote,
                         createdById: user.id,
                     },
                 });
@@ -851,28 +941,33 @@ let FinanceService = class FinanceService {
                 },
                 orderBy: [{ businessDate: 'desc' }, { sequence: 'desc' }],
             });
+            const reason = side === 'AP' && latestEntry?.refType === 'LABOR_PAYABLE'
+                ? 'LABOR_PAYMENT'
+                : side === 'AP'
+                    ? 'MANUAL_AP_PAYMENT'
+                    : 'MANUAL_AR_RECEIPT';
             const row = await this.apar.postCash(tx, {
                 reason,
                 currency: dto.currency,
                 amount,
                 partnerId: dto.partnerId,
                 categoryId: latestEntry?.categoryId ?? undefined,
-                note: dto.note ?? `ຊຳຣະ ${side} (Cash) ${partner.nameLo}`,
+                note: cleanNote || `${side === 'AR' ? 'ຮັບຊຳຣະ' : 'ຊຳຣະ'} ${side} (Cash) ${partner.nameLo}`,
                 createdById: user.id,
                 method: dto.method,
                 bankAccountId: dto.method === 'BANK' ? dto.bankAccountId : null,
             });
             await this.audit.record({
                 actorId: user.id, action: 'UPDATE', entity: 'CashApArLedger', entityId: row?.id,
-                after: { side, partner: partner.nameLo, amount: amount.toFixed() },
+                after: { side, partner: partner.nameLo, amount: amount.toFixed(), method: dto.method },
                 summary: `ຊຳຣະ ${side} (Cash) ${partner.nameLo} — ${amount.toFixed(0)} ${dto.currency}`,
             }, tx);
             return row;
         });
     }
     /** ຍອດປັດຈຸບັນ for one Supplier on one side, in one currency. */
-    async partnerOutstanding(side, partnerId, currency) {
-        const agg = await this.prisma.cashApArLedger.aggregate({
+    async partnerOutstanding(side, partnerId, currency, client = this.prisma) {
+        const agg = await client.cashApArLedger.aggregate({
             where: { side, partnerId, currency, deletedAt: null },
             _sum: { amountIn: true, amountOut: true },
         });
@@ -883,13 +978,12 @@ let FinanceService = class FinanceService {
      */
     async apArByPartner(side) {
         const day = await this.businessDay.current();
-        const today = business_day_service_1.BusinessDayService.toDateOnly();
-        const [partners, openings, prevMovements, movements] = await Promise.all([
+        const today = business_day_service_1.BusinessDayService.toDateOnly(day.date);
+        const [partners, prevMovements, movements] = await Promise.all([
             this.prisma.partnerSource.findMany({
-                where: { deletedAt: null, isActive: true },
+                where: { deletedAt: null },
                 orderBy: { sortOrder: 'asc' },
             }),
-            this.prisma.cashApArOpening.findMany({ where: { businessDayId: day.id, side } }),
             this.prisma.cashApArLedger.groupBy({
                 by: ['partnerId', 'currency'],
                 where: { side, businessDate: { lt: today }, deletedAt: null },
@@ -901,29 +995,41 @@ let FinanceService = class FinanceService {
                 _sum: { amountIn: true, amountOut: true },
             }),
         ]);
-        return partners.flatMap((partner) => CURRENCIES.map((currency) => {
-            const prevRow = prevMovements.find((m) => m.partnerId === partner.id && m.currency === currency);
-            const prevNet = toDec(prevRow?._sum.amountIn).minus(toDec(prevRow?._sum.amountOut));
-            const broughtForward = prevNet;
-            const row = movements.find((m) => m.partnerId === partner.id && m.currency === currency);
-            const increases = toDec(row?._sum.amountIn);
-            const decreases = toDec(row?._sum.amountOut);
-            return {
-                partnerId: partner.id,
-                partnerCode: partner.code,
-                partnerNameLo: partner.nameLo,
-                currency,
-                broughtForward: broughtForward.toFixed(),
-                increases: increases.toFixed(),
-                decreases: decreases.toFixed(),
-                current: (0, domain_1.partnerBalance)(broughtForward, increases, decreases).toFixed(),
-            };
-        }).filter((r) => r.increases !== '0' || r.decreases !== '0' || r.broughtForward !== '0'));
+        return partners.flatMap((partner) => {
+            const rows = CURRENCIES.map((currency) => {
+                const prevRow = prevMovements.find((m) => m.partnerId === partner.id && m.currency === currency);
+                const prevNet = toDec(prevRow?._sum.amountIn).minus(toDec(prevRow?._sum.amountOut));
+                const broughtForward = prevNet;
+                const row = movements.find((m) => m.partnerId === partner.id && m.currency === currency);
+                const increases = toDec(row?._sum.amountIn);
+                const decreases = toDec(row?._sum.amountOut);
+                return {
+                    partnerId: partner.id,
+                    partnerCode: partner.code,
+                    partnerNameLo: partner.nameLo,
+                    isActive: partner.isActive,
+                    currency,
+                    broughtForward: broughtForward.toFixed(),
+                    increases: increases.toFixed(),
+                    decreases: decreases.toFixed(),
+                    current: (0, domain_1.partnerBalance)(broughtForward, increases, decreases).toFixed(),
+                };
+            });
+            const activeRows = rows.filter((r) => r.increases !== '0' || r.decreases !== '0' || r.broughtForward !== '0');
+            if (activeRows.length > 0)
+                return activeRows;
+            // Keep active AP/AR partners visible with a zero row (like AP/AR GOLD)
+            // so users always see Supplier / Smith names even before any movement.
+            if (partner.isActive && !NON_APAR_PARTNER_CODES.has(partner.code)) {
+                return [rows[0]];
+            }
+            return [];
+        });
     }
     /** ຍອດລວມ AP (Cash) / AR (Cash) per currency. */
     async apArTotals(side) {
         const day = await this.businessDay.current();
-        const today = business_day_service_1.BusinessDayService.toDateOnly();
+        const today = business_day_service_1.BusinessDayService.toDateOnly(day.date);
         const [openings, prevMovements, movements] = await Promise.all([
             this.prisma.cashApArOpening.findMany({ where: { businessDayId: day.id, side } }),
             this.prisma.cashApArLedger.groupBy({
@@ -956,10 +1062,27 @@ let FinanceService = class FinanceService {
     }
     async apArHistory(side, query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const partnerId = query.partnerId ?? query.partner_id;
+        const q = query.search?.trim();
         const where = {
             side,
             deletedAt: null,
-            businessDate: history_range_service_1.HistoryRangeService.dayWindow(range),
+            ...(timeWin
+                ? { createdAt: timeWin }
+                : { businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) }),
+            ...(partnerId ? { partnerId: partnerId === 'UNASSIGNED' ? null : partnerId } : {}),
+            ...(query.currency ? { currency: query.currency } : {}),
+            ...(query.refType ? { refType: query.refType } : {}),
+            ...(q
+                ? {
+                    OR: [
+                        { note: { contains: q, mode: 'insensitive' } },
+                        { partner: { nameLo: { contains: q, mode: 'insensitive' } } },
+                        { category: { nameLo: { contains: q, mode: 'insensitive' } } },
+                    ],
+                }
+                : {}),
         };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.cashApArLedger.findMany({

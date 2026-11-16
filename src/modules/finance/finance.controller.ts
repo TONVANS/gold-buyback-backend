@@ -1,8 +1,10 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import type { ApArSide, IncomeExpenseKind } from '@prisma/client';
+import { Body, Controller, Delete, Get, Param, ParseEnumPipe, Patch, Post, Query } from '@nestjs/common';
+import { ApArSide, type IncomeExpenseKind } from '@prisma/client';
 import { FinanceService } from './finance.service';
 import { AdvanceService } from '../../common/services/advance.service';
 import {
+  AdvanceHistoryDto,
+  ApArCashHistoryDto,
   ConsignmentListDto,
   CreateApArCashCategoryDto,
   CreateApArCashEntryDto,
@@ -172,7 +174,7 @@ export class FinanceController {
 
   @Roles('FINANCIAL_CONTROLLER', 'PAYMENT', 'ADMIN', 'MANAGER')
   @Get('advance/history')
-  advanceHistory(@Query() query: HistoryRangeDto, @CurrentUser() user: AuthenticatedUser) {
+  advanceHistory(@Query() query: AdvanceHistoryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.advance.history(query, user);
   }
 
@@ -210,20 +212,23 @@ export class FinanceController {
 
   /* ---- §9.3 / §9.4 AP (Cash) ແລະ AR (Cash) ---- */
 
+  @Roles('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER')
   @Get('ap-ar/:side/totals')
-  totals(@Param('side') side: ApArSide) {
+  totals(@Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide) {
     return this.finance.apArTotals(side);
   }
 
+  @Roles('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER')
   @Get('ap-ar/:side/partners')
-  byPartner(@Param('side') side: ApArSide) {
+  byPartner(@Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide) {
     return this.finance.apArByPartner(side);
   }
 
+  @Roles('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER')
   @Get('ap-ar/:side/history')
   history(
-    @Param('side') side: ApArSide,
-    @Query() query: HistoryRangeDto,
+    @Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide,
+    @Query() query: ApArCashHistoryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.finance.apArHistory(side, query, user);
@@ -232,18 +237,28 @@ export class FinanceController {
   @Roles('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER')
   @Post('ap-ar/:side/entries')
   addEntry(
-    @Param('side') side: ApArSide,
+    @Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide,
     @Body() dto: CreateApArCashEntryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.finance.addApArEntry(side, dto, user);
   }
 
+  @Roles('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER')
+  @Delete('ap-ar/:side/entries/:id')
+  deleteEntry(
+    @Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide,
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.finance.deleteApArEntry(side, id, user);
+  }
+
   /** ປຸ່ມ Payment — settles the Supplier's balance and moves the money. */
   @Roles('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER')
   @Post('ap-ar/:side/settle')
   settle(
-    @Param('side') side: ApArSide,
+    @Param('side', new ParseEnumPipe(ApArSide)) side: ApArSide,
     @Body() dto: SettleApArCashDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {

@@ -5,7 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessDayService } from './business-day.service';
 import { AuditService } from './audit.service';
 import { HistoryRangeService } from './history-range.service';
-import type { HistoryRangeDto } from '../dto/history-range.dto';
+import type { TimeSearchHistoryRangeDto } from '../dto/history-range.dto';
 import type { AuthenticatedUser } from '../decorators/current-user.decorator';
 
 const D = (value: Decimal) => new Prisma.Decimal(value.toFixed());
@@ -176,40 +176,57 @@ export class AdvanceService {
    * ຂ້າມມື້ຫາຍໄປຈາກໜ້າຈໍ ແລະ ດຶງທຸກຂາການເຄື່ອນໄຫວຂອງ Order ທີ່ເຂົ້າເງື່ອນໄຂ
    * ເພື່ອໃຫ້ການລວມຍອດຕາມ Order ຄົບຖ້ວນ.
    */
-  async history(query: HistoryRangeDto, user?: AuthenticatedUser) {
+  async history(query: TimeSearchHistoryRangeDto, user?: AuthenticatedUser) {
     const range = this.range.resolve(query, user);
-    const dayWin = HistoryRangeService.dayWindow(range);
+    const timeWin = this.range.resolveTimeWindow(range, query);
+    const searchWhere = HistoryRangeService.orderSearchWhere(query.search);
 
-    const [advGroups, rangeOrders] = await Promise.all([
-      this.prisma.advanceLedger.groupBy({
-        by: ['orderId', 'currency'],
-        where: { deletedAt: null },
-        _sum: { amountIn: true, amountOut: true },
-      }),
-      this.prisma.advanceLedger.findMany({
-        where: { deletedAt: null, businessDate: dayWin },
-        select: { orderId: true },
-        distinct: ['orderId'],
-      }),
-    ]);
-
-    const unsettledOrderIds = advGroups
-      .filter((g) => toDec(g._sum.amountIn).gt(toDec(g._sum.amountOut)))
-      .map((g) => g.orderId);
-
-    const activeOrderIds = Array.from(
-      new Set([...rangeOrders.map((r) => r.orderId), ...unsettledOrderIds]),
-    );
-
-    const where: Prisma.AdvanceLedgerWhereInput = {
+    const orderFilter: Prisma.OrderWhereInput = {
       deletedAt: null,
-      order: { deletedAt: null },
-      OR: [
-        { businessDate: dayWin },
-        { order: { status: { notIn: ['COMPLETED', 'CANCELLED'] } } },
-        ...(activeOrderIds.length > 0 ? [{ orderId: { in: activeOrderIds } }] : []),
-      ],
+      ...(searchWhere ? searchWhere : {}),
     };
+
+    let where: Prisma.AdvanceLedgerWhereInput;
+    if (timeWin) {
+      where = {
+        deletedAt: null,
+        order: orderFilter,
+        createdAt: timeWin,
+      };
+    } else {
+      const dayWin = HistoryRangeService.dayWindow(range);
+
+      const [advGroups, rangeOrders] = await Promise.all([
+        this.prisma.advanceLedger.groupBy({
+          by: ['orderId', 'currency'],
+          where: { deletedAt: null },
+          _sum: { amountIn: true, amountOut: true },
+        }),
+        this.prisma.advanceLedger.findMany({
+          where: { deletedAt: null, businessDate: dayWin },
+          select: { orderId: true },
+          distinct: ['orderId'],
+        }),
+      ]);
+
+      const unsettledOrderIds = advGroups
+        .filter((g) => toDec(g._sum.amountIn).gt(toDec(g._sum.amountOut)))
+        .map((g) => g.orderId);
+
+      const activeOrderIds = Array.from(
+        new Set([...rangeOrders.map((r) => r.orderId), ...unsettledOrderIds]),
+      );
+
+      where = {
+        deletedAt: null,
+        order: orderFilter,
+        OR: [
+          { businessDate: dayWin },
+          { order: { status: { notIn: ['COMPLETED', 'CANCELLED'] } } },
+          ...(activeOrderIds.length > 0 ? [{ orderId: { in: activeOrderIds } }] : []),
+        ],
+      };
+    }
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.advanceLedger.findMany({

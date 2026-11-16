@@ -16,10 +16,11 @@ export class ShiftBalanceLineDto {
 
 /** ປິດກະ — the closing LAK/THB/USD go to Module Cash pending FC approval. */
 export class CloseShiftDto {
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ShiftBalanceLineDto)
-  balances: ShiftBalanceLineDto[];
+  balances?: ShiftBalanceLineDto[];
 
   @IsOptional() @IsString() @MaxLength(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }) note?: string;
 }

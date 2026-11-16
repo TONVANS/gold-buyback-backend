@@ -89,6 +89,30 @@ let CatalogController = class CatalogController {
     bankAccounts(withActor) {
         return this.catalog.listBankAccounts(withActor === 'true');
     }
+    branches(withActor, includeInactive) {
+        return this.catalog.listBranches(withActor === 'true', includeInactive === 'true');
+    }
+    createBranch(dto, user) {
+        return this.catalog.createBranch(dto, user.id);
+    }
+    updateBranch(id, dto, user) {
+        return this.catalog.updateBranch(id, dto, user.id);
+    }
+    deleteBranch(id, user) {
+        return this.catalog.deleteBranch(id, user.id);
+    }
+    employees(withActor, includeInactive) {
+        return this.catalog.listEmployees(withActor === 'true', includeInactive === 'true');
+    }
+    createEmployee(dto, user) {
+        return this.catalog.createEmployee(dto, user.id);
+    }
+    updateEmployee(id, dto, user) {
+        return this.catalog.updateEmployee(id, dto, user.id);
+    }
+    deleteEmployee(id, user) {
+        return this.catalog.deleteEmployee(id, user.id);
+    }
 };
 exports.CatalogController = CatalogController;
 __decorate([
@@ -274,6 +298,90 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], CatalogController.prototype, "bankAccounts", null);
+__decorate([
+    openapi.ApiQuery({ name: "withActor", required: false }),
+    openapi.ApiQuery({ name: "includeInactive", required: false }),
+    (0, common_1.Get)('branches'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Query)('withActor')),
+    __param(1, (0, common_1.Query)('includeInactive')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "branches", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Post)('branches'),
+    openapi.ApiResponse({ status: 201 }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [catalog_dto_1.CreateBranchDto, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "createBranch", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Patch)('branches/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, catalog_dto_1.UpdateBranchDto, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "updateBranch", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Delete)('branches/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "deleteBranch", null);
+__decorate([
+    openapi.ApiQuery({ name: "withActor", required: false }),
+    openapi.ApiQuery({ name: "includeInactive", required: false }),
+    (0, common_1.Get)('employees'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Query)('withActor')),
+    __param(1, (0, common_1.Query)('includeInactive')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "employees", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Post)('employees'),
+    openapi.ApiResponse({ status: 201, type: Object }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [catalog_dto_1.CreateEmployeeDto, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "createEmployee", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Patch)('employees/:id'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, catalog_dto_1.UpdateEmployeeDto, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "updateEmployee", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER'),
+    (0, common_1.Delete)('employees/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CatalogController.prototype, "deleteEmployee", null);
 exports.CatalogController = CatalogController = __decorate([
     (0, swagger_1.ApiTags)('catalog'),
     (0, swagger_1.ApiBearerAuth)('bearer'),

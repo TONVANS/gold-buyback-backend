@@ -1,11 +1,15 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import {
+  CreateBranchDto,
   CreateCabinetDto,
+  CreateEmployeeDto,
   CreateGoldItemDto,
   CreateGoldTypeDto,
   CreatePartnerDto,
+  UpdateBranchDto,
   UpdateCabinetDto,
+  UpdateEmployeeDto,
   UpdateGoldItemDto,
   UpdateGoldTypeDto,
   UpdatePartnerDto,
@@ -150,5 +154,65 @@ export class CatalogController {
   @Get('bank-accounts')
   bankAccounts(@Query('withActor') withActor?: string) {
     return this.catalog.listBankAccounts(withActor === 'true');
+  }
+
+  @Get('branches')
+  branches(
+    @Query('withActor') withActor?: string,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.catalog.listBranches(withActor === 'true', includeInactive === 'true');
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Post('branches')
+  createBranch(@Body() dto: CreateBranchDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.catalog.createBranch(dto, user.id);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Patch('branches/:id')
+  updateBranch(
+    @Param('id') id: string,
+    @Body() dto: UpdateBranchDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.catalog.updateBranch(id, dto, user.id);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Delete('branches/:id')
+  deleteBranch(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.catalog.deleteBranch(id, user.id);
+  }
+
+  @Get('employees')
+  employees(
+    @Query('withActor') withActor?: string,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.catalog.listEmployees(withActor === 'true', includeInactive === 'true');
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Post('employees')
+  createEmployee(@Body() dto: CreateEmployeeDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.catalog.createEmployee(dto, user.id);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Patch('employees/:id')
+  updateEmployee(
+    @Param('id') id: string,
+    @Body() dto: UpdateEmployeeDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.catalog.updateEmployee(id, dto, user.id);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Delete('employees/:id')
+  deleteEmployee(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.catalog.deleteEmployee(id, user.id);
   }
 }

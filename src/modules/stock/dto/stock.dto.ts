@@ -11,17 +11,25 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { HistoryRangeDto } from '../../../common/dto/history-range.dto';
+import {
+  HistoryRangeDto,
+  TimeSearchHistoryRangeDto,
+  BlankIsAbsent,
+} from '../../../common/dto/history-range.dto';
 import { IsDecimalString } from '../../../common/dto/decimal-string.validator';
 
-export class StockOldHistoryQueryDto extends HistoryRangeDto {
+export class StockNewHistoryQueryDto extends TimeSearchHistoryRangeDto {}
+
+export class StockOldHistoryQueryDto extends TimeSearchHistoryRangeDto {
   @ApiPropertyOptional({ description: 'ປະເພດຄຳ ID' })
   @IsOptional()
+  @BlankIsAbsent()
   @IsString()
   goldTypeId?: string;
 
   @ApiPropertyOptional({ description: 'ຄົ້ນຫາ (ແຫຼ່ງ, ປະເພດ, ຫຼື ລະຫັດບິນ)' })
   @IsOptional()
+  @BlankIsAbsent()
   @IsString()
   q?: string;
 }

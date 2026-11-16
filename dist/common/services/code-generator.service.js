@@ -22,6 +22,8 @@ exports.CODE_SCOPES = {
     INCOME_EXPENSE_CATEGORY: { prefix: 'IE', width: 3 },
     APAR_CASH_CATEGORY: { prefix: 'APAR', width: 3 },
     GOLD_SKU: { prefix: 'SKU', width: 3 },
+    EMPLOYEE: { prefix: 'EMP', width: 3 },
+    BRANCH: { prefix: 'BR', width: 3 },
 };
 /** How many times to step past a code that is already taken. */
 const MAX_ATTEMPTS = 50;

@@ -661,6 +661,46 @@ model BankAccount {
   @@map("bank_accounts")
 }
 
+/// ສັງກັດ / ສາຂາ ຂອງພະນັກງານ.
+model Branch {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  nameLo    String
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  employees Employee[]
+
+  /// ຊື່ຊ້ຳກັນບໍ່ໄດ້: ດັດສະນີ SQL ດິບ `branches_name_lo_active_key` ຢູ່ migration
+  /// `add_employee_branches` — `lower("nameLo")` + WHERE "deletedAt" IS NULL.
+  /// Prisma ຂຽນ lower() ແລະ WHERE ບໍ່ໄດ້ ຈຶ່ງບໍ່ປາກົດຢູ່ນີ້ — ຢ່າລຶບ.
+  @@map("branches")
+}
+
+/// ຂໍ້ມູນພະນັກງານ — ໃຊ້ເປັນລາຍຊື່ເລືອກ ພະນັກງານຮັບ ໃນ Order ແລະ ຝາກສິນຄ້າ.
+model Employee {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  fullName  String
+  phone     String?
+  position  String?
+  branchId  String?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  /// ຊື່ຊ້ຳກັນບໍ່ໄດ້: ດັດສະນີ SQL ດິບ `employees_full_name_active_key` ຢູ່ migration
+  /// `add_employees` — `lower("fullName")` + WHERE "deletedAt" IS NULL.
+  /// Prisma ຂຽນ lower() ແລະ WHERE ບໍ່ໄດ້ ຈຶ່ງບໍ່ປາກົດຢູ່ນີ້ — ຢ່າລຶບ.
+  @@index([branchId])
+  @@map("employees")
+}
+
 // ---------------------------------------------------------------------------
 //  Business day & shifts (§4, §5)
 // ---------------------------------------------------------------------------

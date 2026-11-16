@@ -246,12 +246,25 @@ let LedgerService = class LedgerService {
     }
     async goldApArHistory(query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
         const partnerId = query.partnerId ?? query.partner_id;
+        const q = query.search?.trim();
         const where = {
             deletedAt: null,
-            businessDate: history_range_service_1.HistoryRangeService.dayWindow(range),
+            ...(timeWin
+                ? { createdAt: timeWin }
+                : { businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) }),
             ...(query.side ? { side: query.side } : {}),
             ...(partnerId ? { partnerId } : {}),
+            ...(q
+                ? {
+                    OR: [
+                        { typeLabel: { contains: q, mode: 'insensitive' } },
+                        { note: { contains: q, mode: 'insensitive' } },
+                        { partner: { nameLo: { contains: q, mode: 'insensitive' } } },
+                    ],
+                }
+                : {}),
         };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.goldApArLedger.findMany({

@@ -225,6 +225,212 @@ let CatalogService = class CatalogService {
         });
         return withActor ? this.audit.withCreatorsFromAudit('BankAccount', rows) : rows;
     }
+    // --- ສັງກັດ / ສາຂາ --------------------------------------------------------
+    async assertBranchNameFree(nameLo, excludeId) {
+        const trimmed = nameLo.trim();
+        if (!trimmed)
+            throw new common_1.BadRequestException('ກະລຸນາປ້ອນຊື່ສັງກັດ / ສາຂາ');
+        const existing = await this.prisma.branch.findFirst({
+            where: {
+                ...(excludeId ? { id: { not: excludeId } } : {}),
+                nameLo: { equals: trimmed, mode: 'insensitive' },
+                deletedAt: null,
+            },
+            select: { id: true },
+        });
+        if (existing)
+            throw new common_1.ConflictException(`ສັງກັດ / ສາຂາ "${trimmed}" ມີຢູ່ແລ້ວ`);
+    }
+    async resolveBranchId(branchId, requireActive = true) {
+        const trimmed = branchId?.trim();
+        if (!trimmed)
+            return null;
+        const branch = await this.prisma.branch.findFirst({
+            where: { id: trimmed, deletedAt: null, ...(requireActive ? { isActive: true } : {}) },
+            select: { id: true },
+        });
+        if (!branch)
+            throw new common_1.BadRequestException('ບໍ່ພົບສັງກັດ / ສາຂາທີ່ເລືອກ');
+        return branch.id;
+    }
+    async listBranches(withActor = false, includeInactive = false) {
+        const rows = await this.prisma.branch.findMany({
+            where: { deletedAt: null, ...(includeInactive ? {} : { isActive: true }) },
+            include: {
+                _count: { select: { employees: { where: { deletedAt: null } } } },
+            },
+            orderBy: [{ isActive: 'desc' }, { code: 'asc' }],
+        });
+        return withActor ? this.audit.withCreatorsFromAudit('Branch', rows) : rows;
+    }
+    async createBranch(data, actorId) {
+        await this.assertBranchNameFree(data.nameLo);
+        const code = await this.codes.nextFor('BRANCH', this.prisma.branch);
+        const created = await this.prisma.branch.create({
+            data: { code, nameLo: data.nameLo.trim() },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'CREATE',
+            entity: 'Branch',
+            entityId: created.id,
+            after: created,
+            summary: `ເພີ່ມສັງກັດ/ສາຂາ ${created.nameLo}`,
+        });
+        return created;
+    }
+    async updateBranch(id, data, actorId) {
+        const before = await this.prisma.branch.findFirst({ where: { id, deletedAt: null } });
+        if (!before)
+            throw new common_1.NotFoundException('ບໍ່ພົບສັງກັດ / ສາຂາ');
+        if (data.nameLo !== undefined) {
+            await this.assertBranchNameFree(data.nameLo, id);
+        }
+        const after = await this.prisma.branch.update({
+            where: { id },
+            data: {
+                ...(data.nameLo !== undefined ? { nameLo: data.nameLo.trim() } : {}),
+                ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+            },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'UPDATE',
+            entity: 'Branch',
+            entityId: id,
+            before,
+            after,
+            summary: `ແກ້ໄຂສັງກັດ/ສາຂາ ${after.nameLo}`,
+        });
+        return after;
+    }
+    async deleteBranch(id, actorId) {
+        const before = await this.prisma.branch.findFirst({ where: { id, deletedAt: null } });
+        if (!before)
+            throw new common_1.NotFoundException('ບໍ່ພົບສັງກັດ / ສາຂາ');
+        await this.assertUnused('ສັງກັດ/ສາຂາ', [
+            ['ພະນັກງານ', this.prisma.employee.count({ where: { branchId: id, deletedAt: null } })],
+        ]);
+        const after = await this.prisma.branch.update({
+            where: { id },
+            data: { deletedAt: new Date(), isActive: false },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'DELETE',
+            entity: 'Branch',
+            entityId: id,
+            before,
+            after,
+            summary: `ລຶບສັງກັດ/ສາຂາ ${before.nameLo}`,
+        });
+        return after;
+    }
+    // --- ພະນັກງານ -------------------------------------------------------------
+    async assertEmployeeNameFree(fullName, excludeId) {
+        const trimmed = fullName.trim();
+        if (!trimmed)
+            throw new common_1.BadRequestException('ກະລຸນາປ້ອນຊື່ພະນັກງານ');
+        const existing = await this.prisma.employee.findFirst({
+            where: {
+                ...(excludeId ? { id: { not: excludeId } } : {}),
+                fullName: { equals: trimmed, mode: 'insensitive' },
+                deletedAt: null,
+            },
+            select: { id: true },
+        });
+        if (existing)
+            throw new common_1.ConflictException(`ພະນັກງານ "${trimmed}" ມີຢູ່ແລ້ວ`);
+    }
+    async listEmployees(withActor = false, includeInactive = false) {
+        const rows = await this.prisma.employee.findMany({
+            where: { deletedAt: null, ...(includeInactive ? {} : { isActive: true }) },
+            include: {
+                branch: { select: { id: true, code: true, nameLo: true, isActive: true } },
+            },
+            orderBy: [{ isActive: 'desc' }, { code: 'asc' }],
+        });
+        return withActor ? this.audit.withCreatorsFromAudit('Employee', rows) : rows;
+    }
+    async createEmployee(data, actorId) {
+        await this.assertEmployeeNameFree(data.fullName);
+        const branchId = await this.resolveBranchId(data.branchId, true);
+        const code = await this.codes.nextFor('EMPLOYEE', this.prisma.employee);
+        const created = await this.prisma.employee.create({
+            data: {
+                code,
+                fullName: data.fullName.trim(),
+                phone: data.phone?.trim() || null,
+                position: data.position?.trim() || null,
+                branchId,
+            },
+            include: {
+                branch: { select: { id: true, code: true, nameLo: true, isActive: true } },
+            },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'CREATE',
+            entity: 'Employee',
+            entityId: created.id,
+            after: created,
+            summary: `ເພີ່ມພະນັກງານ ${created.fullName}`,
+        });
+        return created;
+    }
+    async updateEmployee(id, data, actorId) {
+        const before = await this.prisma.employee.findFirst({ where: { id, deletedAt: null } });
+        if (!before)
+            throw new common_1.NotFoundException('ບໍ່ພົບຂໍ້ມູນພະນັກງານ');
+        if (data.fullName !== undefined) {
+            await this.assertEmployeeNameFree(data.fullName, id);
+        }
+        const nextBranchId = data.branchId !== undefined
+            ? await this.resolveBranchId(data.branchId, data.branchId !== before.branchId)
+            : undefined;
+        const after = await this.prisma.employee.update({
+            where: { id },
+            data: {
+                ...(data.fullName !== undefined ? { fullName: data.fullName.trim() } : {}),
+                ...(data.phone !== undefined ? { phone: data.phone.trim() || null } : {}),
+                ...(data.position !== undefined ? { position: data.position.trim() || null } : {}),
+                ...(nextBranchId !== undefined ? { branchId: nextBranchId } : {}),
+                ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+            },
+            include: {
+                branch: { select: { id: true, code: true, nameLo: true, isActive: true } },
+            },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'UPDATE',
+            entity: 'Employee',
+            entityId: id,
+            before,
+            after,
+            summary: `ແກ້ໄຂພະນັກງານ ${after.fullName}`,
+        });
+        return after;
+    }
+    async deleteEmployee(id, actorId) {
+        const before = await this.prisma.employee.findFirst({ where: { id, deletedAt: null } });
+        if (!before)
+            throw new common_1.NotFoundException('ບໍ່ພົບຂໍ້ມູນພະນັກງານ');
+        const after = await this.prisma.employee.update({
+            where: { id },
+            data: { deletedAt: new Date(), isActive: false },
+        });
+        await this.audit.record({
+            actorId,
+            action: 'DELETE',
+            entity: 'Employee',
+            entityId: id,
+            before,
+            after,
+            summary: `ລຶບພະນັກງານ ${before.fullName}`,
+        });
+        return after;
+    }
     // --- ແກ້ໄຂ / ລຶບ ----------------------------------------------------------
     async updateGoldType(id, data, actorId) {
         const before = await this.prisma.goldType.findFirst({ where: { id, deletedAt: null } });

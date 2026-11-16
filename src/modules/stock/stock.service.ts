@@ -32,6 +32,7 @@ import type {
   UpdateSkuBalanceDto,
   UpdateOldTypeBalanceDto,
   UpdateOldLedgerRowDto,
+  StockNewHistoryQueryDto,
   StockOldHistoryQueryDto,
 } from './dto/stock.dto';
 
@@ -1203,10 +1204,34 @@ export class StockService {
     return this.audit.withActorNames(rows);
   }
 
-  async newHistory(query: HistoryRangeDto, user?: AuthenticatedUser) {
+  async newHistory(query: StockNewHistoryQueryDto, user?: AuthenticatedUser) {
     const range = this.range.resolve(query, user);
+    const timeWin = this.range.resolveTimeWindow(range, query);
+    const q = query.search?.trim();
     // businessDate is a DATE column, so the inclusive end is the day itself.
-    const where = { deletedAt: null, businessDate: HistoryRangeService.dayWindow(range) };
+    // ເມື່ອມີ start_time / end_time ໃຫ້ກອງຕາມ timestamp createdAt ພາຍໃນຊ່ວງທີ່ລະບຸ.
+    const where: Prisma.StockNewLedgerWhereInput = {
+      deletedAt: null,
+      ...(timeWin
+        ? { createdAt: timeWin }
+        : { businessDate: HistoryRangeService.dayWindow(range) }),
+      ...(q
+        ? {
+            OR: [
+              { partnerLabel: { contains: q, mode: 'insensitive' } },
+              { typeLabel: { contains: q, mode: 'insensitive' } },
+              { movement: { code: { contains: q, mode: 'insensitive' } } },
+              {
+                movement: {
+                  lines: {
+                    some: { goldSku: { fullSkuName: { contains: q, mode: 'insensitive' } } },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.stockNewLedger.findMany({
         where,
@@ -1235,16 +1260,21 @@ export class StockService {
 
   async oldHistory(query: StockOldHistoryQueryDto, user?: AuthenticatedUser) {
     const range = this.range.resolve(query, user);
+    const timeWin = this.range.resolveTimeWindow(range, query);
+    const q = (query.q ?? query.search)?.trim();
     const where: Prisma.StockOldLedgerWhereInput = {
       deletedAt: null,
-      businessDate: HistoryRangeService.dayWindow(range),
+      ...(timeWin
+        ? { createdAt: timeWin }
+        : { businessDate: HistoryRangeService.dayWindow(range) }),
       ...(query.goldTypeId ? { goldTypeId: query.goldTypeId } : {}),
-      ...(query.q && query.q.trim()
+      ...(q
         ? {
             OR: [
-              { partnerLabel: { contains: query.q.trim(), mode: 'insensitive' } },
-              { typeLabel: { contains: query.q.trim(), mode: 'insensitive' } },
-              { movement: { code: { contains: query.q.trim(), mode: 'insensitive' } } },
+              { partnerLabel: { contains: q, mode: 'insensitive' } },
+              { typeLabel: { contains: q, mode: 'insensitive' } },
+              { goldType: { nameLo: { contains: q, mode: 'insensitive' } } },
+              { movement: { code: { contains: q, mode: 'insensitive' } } },
             ],
           }
         : {}),
@@ -2146,6 +2176,20 @@ export class StockService {
             data: { deletedAt: new Date() },
           });
         }
+        await this.apar.recomputeCashRunningTotals(
+          tx,
+          cashAparRow.side,
+          cashAparRow.currency,
+          cashAparRow.partnerId,
+        );
+        if (cashPartnerId && cashPartnerId !== cashAparRow.partnerId) {
+          await this.apar.recomputeCashRunningTotals(
+            tx,
+            cashAparRow.side,
+            cashAparRow.currency,
+            cashPartnerId,
+          );
+        }
       } else if (movement.type === 'IN' && laborFeeThb.gt(0)) {
         await this.apar.postCash(tx, {
           reason: 'LABOR_PAYABLE',
@@ -2297,10 +2341,21 @@ export class StockService {
       }
 
       // 6. Soft-delete CashApArLedger row
+      const cashAparRows = await tx.cashApArLedger.findMany({
+        where: { refId: id, deletedAt: null },
+        select: { side: true, currency: true, partnerId: true },
+      });
       await tx.cashApArLedger.updateMany({
         where: { refId: id, deletedAt: null },
         data: { deletedAt: now },
       });
+      const seenCashStreams = new Set<string>();
+      for (const cr of cashAparRows) {
+        const key = `${cr.side}:${cr.currency}:${cr.partnerId ?? ''}`;
+        if (seenCashStreams.has(key)) continue;
+        seenCashStreams.add(key);
+        await this.apar.recomputeCashRunningTotals(tx, cr.side, cr.currency, cr.partnerId);
+      }
 
       await this.audit.record(
         {

@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SettleApArCashDto = exports.CreateApArCashEntryDto = exports.UpdateApArCashCategoryDto = exports.CreateApArCashCategoryDto = exports.CreateConsignmentDto = exports.ConsignmentLineDto = exports.UpdateIncomeExpenseDto = exports.CreateIncomeExpenseDto = exports.ConsignmentListDto = exports.IncomeExpenseHistoryDto = exports.IncomeExpenseSummaryDto = exports.IncomeExpenseLineDto = exports.UpdateIncomeExpenseCategoryDto = exports.CreateIncomeExpenseCategoryDto = exports.UpdateBankAccountDto = exports.CreateBankAccountDto = void 0;
+exports.ApArCashHistoryDto = exports.SettleApArCashDto = exports.CreateApArCashEntryDto = exports.UpdateApArCashCategoryDto = exports.CreateApArCashCategoryDto = exports.CreateConsignmentDto = exports.ConsignmentLineDto = exports.UpdateIncomeExpenseDto = exports.CreateIncomeExpenseDto = exports.AdvanceHistoryDto = exports.ConsignmentListDto = exports.IncomeExpenseHistoryDto = exports.IncomeExpenseSummaryDto = exports.IncomeExpenseLineDto = exports.UpdateIncomeExpenseCategoryDto = exports.CreateIncomeExpenseCategoryDto = exports.UpdateBankAccountDto = exports.CreateBankAccountDto = void 0;
 const openapi = require("@nestjs/swagger");
 const class_validator_1 = require("class-validator");
 const class_transformer_1 = require("class-transformer");
@@ -170,7 +170,7 @@ __decorate([
     (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE']),
     __metadata("design:type", String)
 ], IncomeExpenseHistoryDto.prototype, "kind", void 0);
-class ConsignmentListDto extends history_range_dto_1.HistoryRangeDto {
+class ConsignmentListDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
     status;
     static _OPENAPI_METADATA_FACTORY() {
         return { status: { required: false, enum: ["HELD", "RETURNED"], enum: ['HELD', 'RETURNED'] } };
@@ -182,6 +182,12 @@ __decorate([
     (0, class_validator_1.IsIn)(['HELD', 'RETURNED']),
     __metadata("design:type", String)
 ], ConsignmentListDto.prototype, "status", void 0);
+class AdvanceHistoryDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
+    static _OPENAPI_METADATA_FACTORY() {
+        return {};
+    }
+}
+exports.AdvanceHistoryDto = AdvanceHistoryDto;
 class CreateIncomeExpenseDto {
     categoryId;
     /** Single-leg form, kept so an older client still works. */
@@ -493,4 +499,39 @@ __decorate([
     (0, class_validator_1.MaxLength)(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }),
     __metadata("design:type", String)
 ], SettleApArCashDto.prototype, "note", void 0);
+/** §9.3 / §9.4 — History filters for AP (Cash) / AR (Cash). */
+class ApArCashHistoryDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
+    partnerId;
+    partner_id;
+    currency;
+    refType;
+    static _OPENAPI_METADATA_FACTORY() {
+        return { partnerId: { required: false, type: () => String }, partner_id: { required: false, type: () => String }, currency: { required: false, enum: ["LAK", "THB", "USD"], enum: ['LAK', 'THB', 'USD'] }, refType: { required: false, type: () => String } };
+    }
+}
+exports.ApArCashHistoryDto = ApArCashHistoryDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], ApArCashHistoryDto.prototype, "partnerId", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], ApArCashHistoryDto.prototype, "partner_id", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsIn)(['LAK', 'THB', 'USD']),
+    __metadata("design:type", String)
+], ApArCashHistoryDto.prototype, "currency", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], ApArCashHistoryDto.prototype, "refType", void 0);
 //# sourceMappingURL=finance.dto.js.map

@@ -1,5 +1,5 @@
 import { dec, trimTrailingZeros } from './decimal.js';
-import { truncate } from './rounding.js';
+import { roundUp, truncate } from './rounding.js';
 import { GRAMS_PER_BAHT } from './constants.js';
 /**
  * The running-column contract shared by Stock (NEW) §7.1, Stock (OLD) §7.2
@@ -98,11 +98,12 @@ export function checkStockOut(availableG, requestedG) {
     };
 }
 /**
- * ນ້ຳໜັກ(g) ທີ່ໄດ້ຮັບ = ລວມ GOLD(g) × %ຄຳ (ທົດສະນິຍົມ 3 ຕົວ) — TOR §7.2 OUT ກໍລະນີ 1.
+ * ນ້ຳໜັກ(g) ທີ່ໄດ້ຮັບ = ROUNDUP(ລວມ GOLD(g) × %ຄຳ, 0) — TOR §7.2 OUT ກໍລະນີ 1.
+ * ປັດເສດຂຶ້ນທຸກກໍລະນີ ແລະ ຕັດຫຼັກຈຸດອອກ ເພື່ອໃຊ້ຕັດຍອດ AP(GOLD).
  */
 export function expectedReturnWeight(totalGoldG, goldPercent) {
     const raw = dec(totalGoldG).mul(dec(goldPercent).div(100));
-    return raw.isZero() ? dec(0) : raw.toDecimalPlaces(3);
+    return raw.isZero() ? dec(0) : roundUp(raw, 0);
 }
 /** GOLD (g) = weight_g × ຈຳນວນ — used by every movement line form. */
 export function lineGoldWeight(weightG, quantity) {

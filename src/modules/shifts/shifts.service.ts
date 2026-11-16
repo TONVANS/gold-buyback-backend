@@ -1,4 +1,10 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { dec, type Decimal } from '@kpv/domain';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -7,6 +13,7 @@ import { ApprovalService } from '../../common/services/approval.service';
 import { BusinessDayService } from '../../common/services/business-day.service';
 import { StockLedgerService } from '../../common/services/stock-ledger.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CashService } from '../cash/cash.service';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import type { CloseShiftDto, ReviewShiftDto } from './dto/shift.dto';
 
@@ -27,6 +34,7 @@ export class ShiftsService {
     private readonly businessDay: BusinessDayService,
     private readonly notifications: NotificationsService,
     private readonly stockLedger: StockLedgerService,
+    private readonly cash: CashService,
   ) {}
 
   /** The caller's shift for today, if any. */
@@ -73,13 +81,42 @@ export class ShiftsService {
     if (shift.status !== 'OPEN') throw new ConflictException('ກະນີ້ຖືກປິດແລ້ວ');
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // ຄຳນວນຍອດເງິນຄົງເຫຼືອຕົວຈິງໃນກະເປົ໋າ (wallet) ຈາກລະບົບ
+      const systemBalances = await this.cash.calculateShiftWalletBalance(shift.id, tx);
+      const systemBalanceMap = new Map(
+        systemBalances.map((b) => [b.currency, dec(b.balance)]),
+      );
+
+      // ປ້ອງກັນການແກ້ໄຂຕົວເລກ: ຖ້າສົ່ງ balances ມາ ຕ້ອງກົງກັບຍອດຄົງເຫຼືອຕົວຈິງໃນລະບົບ
+      if (dto.balances && dto.balances.length > 0) {
+        for (const line of dto.balances) {
+          const expected = systemBalanceMap.get(line.currency) ?? dec(0);
+          if (!dec(line.amount).eq(expected)) {
+            throw new BadRequestException(
+              `ຍອດເງິນ ${line.currency} ບໍ່ກົງກັບຍອດຄົງເຫຼືອໃນລະບົບ (ລະບົບ: ${expected.toFixed()}, ສົ່ງມາ: ${line.amount}) — ບໍ່ອະນຸຍາດໃຫ້ແກ້ໄຂຍອດນັບໄດ້`,
+            );
+          }
+        }
+
+        for (const [curr, expected] of systemBalanceMap.entries()) {
+          if (expected.gt(0)) {
+            const provided = dto.balances.find((b) => b.currency === curr);
+            if (!provided) {
+              throw new BadRequestException(
+                `ບໍ່ພົບຍອດເງິນ ${curr} ທີ່ມີຍອດຄົງເຫຼືອໃນລະບົບ (${expected.toFixed()})`,
+              );
+            }
+          }
+        }
+      }
+
       await tx.shiftCashBalance.deleteMany({ where: { shiftId: shift.id } });
-      for (const line of dto.balances) {
+      for (const b of systemBalances) {
         await tx.shiftCashBalance.create({
           data: {
             shiftId: shift.id,
-            currency: line.currency,
-            amount: new Prisma.Decimal(dec(line.amount).toFixed()),
+            currency: b.currency,
+            amount: new Prisma.Decimal(dec(b.balance).toFixed()),
           },
         });
       }

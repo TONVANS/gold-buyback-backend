@@ -26,6 +26,7 @@ import {
   UpdateSkuBalanceDto,
   UpdateOldTypeBalanceDto,
   UpdateOldLedgerRowDto,
+  StockNewHistoryQueryDto,
   StockOldHistoryQueryDto,
 } from './dto/stock.dto';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -33,7 +34,6 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RequiresOpenShift } from '../../common/decorators/requires-shift.decorator';
 import { CurrentUser, type AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { HistoryRangeDto } from '../../common/dto/history-range.dto';
 
 @ApiTags('stock')
 @ApiBearerAuth('bearer')
@@ -52,7 +52,7 @@ export class StockController {
   }
 
   @Get('new/history')
-  newHistory(@Query() query: HistoryRangeDto, @CurrentUser() user: AuthenticatedUser) {
+  newHistory(@Query() query: StockNewHistoryQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.stock.newHistory(query, user);
   }
 

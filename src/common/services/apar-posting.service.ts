@@ -85,12 +85,17 @@ export class ApArPostingService {
 
     const posting = buildCashPosting(input.reason, input.currency, input.amount);
     const businessDate = BusinessDayService.toDateOnly();
+    const partnerFilter = input.partnerId ?? null;
+
+    // Serialize sequence allocation + running balance per (side, currency, businessDate).
+    const lockKey = `cash_apar:${posting.side}:${input.currency}:${businessDate.toISOString().slice(0, 10)}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
     const previous = await tx.cashApArLedger.findFirst({
       where: {
         side: posting.side,
         currency: input.currency,
-        ...(input.partnerId ? { partnerId: input.partnerId } : {}),
+        partnerId: partnerFilter,
         deletedAt: null,
       },
       orderBy: [{ businessDate: 'desc' }, { sequence: 'desc' }],
@@ -118,7 +123,7 @@ export class ApArPostingService {
         side: posting.side,
         refType: REF_TYPE[input.reason],
         refId: input.refId ?? null,
-        partnerId: input.partnerId ?? null,
+        partnerId: partnerFilter,
         categoryId,
         businessDate,
         currency: input.currency,
@@ -132,6 +137,33 @@ export class ApArPostingService {
         bankAccountId: input.bankAccountId ?? null,
       },
     });
+  }
+
+  /**
+   * Recompute stored running `balance` for a `(side, currency, partnerId)` stream
+   * after an entry is edited or soft-deleted.
+   */
+  async recomputeCashRunningTotals(
+    tx: Prisma.TransactionClient,
+    side: ApArSide,
+    currency: Currency,
+    partnerId: string | null,
+  ) {
+    const rows = await tx.cashApArLedger.findMany({
+      where: { side, currency, partnerId, deletedAt: null },
+      orderBy: [{ businessDate: 'asc' }, { sequence: 'asc' }],
+    });
+    let running = dec(0);
+    for (const row of rows) {
+      running = running.plus(toDec(row.amountIn)).minus(toDec(row.amountOut));
+      const next = D(running);
+      if (!row.balance.equals(next)) {
+        await tx.cashApArLedger.update({
+          where: { id: row.id },
+          data: { balance: next },
+        });
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- *

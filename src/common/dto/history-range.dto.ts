@@ -1,6 +1,8 @@
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+
+export const TIME_FILTER_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
 /**
  * ຊ່ອງວ່າງ = ບໍ່ໄດ້ສົ່ງມາ.
@@ -10,7 +12,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
  * `<input type="date">` ທີ່ຜູ້ໃຊ້ລ້າງອອກ ສົ່ງມາເປັນ `from_date=` ແທ້ໆ, ແລະ
  * `?from_date=` ຄວນໝາຍຄວາມວ່າ "ບໍ່ໄດ້ກອງ" ບໍ່ແມ່ນ "ຮູບແບບວັນທີຜິດ".
  */
-const BlankIsAbsent = () =>
+export const BlankIsAbsent = () =>
   Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
 
 /** ຄືກັນ ແຕ່ແປງເປັນຕົວເລກ — ແທນ `@Type(() => Number)` ເພາະ `Number('')` = 0. */
@@ -93,6 +95,46 @@ export class HistoryRangeDto {
   @ApiPropertyOptional({ description: 'ເອົາທຸກແຖວໃນຊ່ວງ (ສຳລັບ export)' })
   @IsOptional()
   all?: string;
+}
+
+/**
+ * ຕົວກອງປະຫວັດພ້ອມຊ່ວງເວລາ (start_time - end_time) ແລະ ຊ່ອງຄົ້ນຫາ.
+ */
+export class TimeSearchHistoryRangeDto extends HistoryRangeDto {
+  @ApiPropertyOptional({ example: '08:00', description: 'ເວລາເລີ່ມຕົ້ນ (HH:mm)' })
+  @IsOptional()
+  @BlankIsAbsent()
+  @Matches(TIME_FILTER_PATTERN, { message: 'start_time ຕ້ອງເປັນຮູບແບບ HH:mm' })
+  start_time?: string;
+
+  @ApiPropertyOptional({ example: '17:30', description: 'ເວລາສິ້ນສຸດ (HH:mm)' })
+  @IsOptional()
+  @BlankIsAbsent()
+  @Matches(TIME_FILTER_PATTERN, { message: 'end_time ຕ້ອງເປັນຮູບແບບ HH:mm' })
+  end_time?: string;
+
+  /** camelCase alias for start_time. */
+  @ApiPropertyOptional({ deprecated: true })
+  @IsOptional()
+  @BlankIsAbsent()
+  @Matches(TIME_FILTER_PATTERN, { message: 'startTime ຕ້ອງເປັນຮູບແບບ HH:mm' })
+  startTime?: string;
+
+  /** camelCase alias for end_time. */
+  @ApiPropertyOptional({ deprecated: true })
+  @IsOptional()
+  @BlankIsAbsent()
+  @Matches(TIME_FILTER_PATTERN, { message: 'endTime ຕ້ອງເປັນຮູບແບບ HH:mm' })
+  endTime?: string;
+
+  @ApiPropertyOptional({
+    description: 'ຄົ້ນຫາຕາມ ເບີໂທລູກຄ້າ / ເລກບິນ / ຊື່ພະນັກງານຮັບ / ລະຫັດ Order',
+  })
+  @IsOptional()
+  @BlankIsAbsent()
+  @IsString()
+  @MaxLength(100, { message: 'ຄຳຄົ້ນຫາຍາວເກີນ 100 ຕົວ' })
+  search?: string;
 }
 
 /** What a paginated history endpoint returns. */

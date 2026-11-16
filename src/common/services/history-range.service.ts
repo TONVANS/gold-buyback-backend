@@ -1,8 +1,15 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import type { UserRole } from '@prisma/client';
+import type { Prisma, UserRole } from '@prisma/client';
 import type { AuthenticatedUser } from '../decorators/current-user.decorator';
 import { HistoryRangeDto, type PagedResult } from '../dto/history-range.dto';
 import { BusinessDayService } from './business-day.service';
+
+export interface TimeFilterQuery {
+  start_time?: string;
+  end_time?: string;
+  startTime?: string;
+  endTime?: string;
+}
 
 /** Roles that may only ever see the current business day. */
 const SAME_DAY_ONLY: ReadonlySet<UserRole> = new Set<UserRole>(['VALUER']);
@@ -109,6 +116,93 @@ export class HistoryRangeService {
   /** A Prisma filter for a timestamp column. */
   static window(range: ResolvedRange) {
     return { gte: range.from, lt: range.until };
+  }
+
+  private parseTime(value: string, label: string) {
+    const match = value.trim().match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/);
+    if (!match) {
+      throw new BadRequestException(`${label} ບໍ່ຖືກຕ້ອງ (ຮູບແບບ HH:mm)`);
+    }
+    return {
+      hours: Number(match[1]),
+      minutes: Number(match[2]),
+      seconds: match[3] ? Number(match[3]) : 0,
+      hasSeconds: Boolean(match[3]),
+    };
+  }
+
+  /**
+   * ແປງ start_time - end_time (ຮ່ວມກັບ range.from / range.to ໃນເຂດເວລາຮ້ານ)
+   * ເປັນຊ່ວງ timestamp `{ gte, lt }` ສຳລັບ Prisma. ຖ້າບໍ່ໄດ້ສົ່ງມາທັງຄູ່ = null.
+   */
+  resolveTimeWindow(range: ResolvedRange, query: TimeFilterQuery): { gte: Date; lt: Date } | null {
+    const rawStart = query.start_time ?? query.startTime;
+    const rawEnd = query.end_time ?? query.endTime;
+    if (!rawStart && !rawEnd) return null;
+
+    const startBound = rawStart
+      ? (() => {
+          const t = this.parseTime(rawStart, 'start_time');
+          return new Date(
+            range.from.getFullYear(),
+            range.from.getMonth(),
+            range.from.getDate(),
+            t.hours,
+            t.minutes,
+            t.seconds,
+            0,
+          );
+        })()
+      : range.from;
+
+    const endBound = rawEnd
+      ? (() => {
+          const t = this.parseTime(rawEnd, 'end_time');
+          return t.hasSeconds
+            ? new Date(
+                range.to.getFullYear(),
+                range.to.getMonth(),
+                range.to.getDate(),
+                t.hours,
+                t.minutes,
+                t.seconds + 1,
+                0,
+              )
+            : new Date(
+                range.to.getFullYear(),
+                range.to.getMonth(),
+                range.to.getDate(),
+                t.hours,
+                t.minutes + 1,
+                0,
+                0,
+              );
+        })()
+      : range.until;
+
+    if (startBound.getTime() > endBound.getTime() - 1) {
+      throw new BadRequestException('start_time ຕ້ອງບໍ່ຫຼັງ end_time');
+    }
+
+    return { gte: startBound, lt: endBound };
+  }
+
+  /** ຕົວກອງຄົ້ນຫາຮ່ວມກັນສຳລັບ Order (ເບີໂທລູກຄ້າ / ເລກບິນ / ຊື່ພະນັກງານຮັບ / ລະຫັດ Order). */
+  static orderSearchWhere(
+    search?: string,
+    includeSupplier = false,
+  ): Prisma.OrderWhereInput | undefined {
+    const q = search?.trim();
+    if (!q) return undefined;
+    return {
+      OR: [
+        { customer: { phone: { contains: q, mode: 'insensitive' } } },
+        { billNo: { contains: q, mode: 'insensitive' } },
+        { staffName: { contains: q, mode: 'insensitive' } },
+        { code: { contains: q, mode: 'insensitive' } },
+        ...(includeSupplier ? [{ supplier: { nameLo: { contains: q, mode: 'insensitive' as const } } }] : []),
+      ],
+    };
   }
 
   /**

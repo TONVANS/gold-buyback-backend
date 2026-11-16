@@ -9,12 +9,41 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UpdateOldLedgerRowDto = exports.UpdateOldTypeBalanceDto = exports.UpdateSkuBalanceDto = exports.UpdateStockMovementDto = exports.CreateHandoverDto = exports.HandoverTypeLineDto = exports.HandoverQueryDto = exports.FactoryTrackingQueryDto = exports.FactoryAssessmentDto = exports.ReviewStockDto = exports.CreateTransferDto = exports.CreateStockOutDto = exports.CreateStockInDto = exports.StockLineDto = void 0;
+exports.UpdateOldLedgerRowDto = exports.UpdateOldTypeBalanceDto = exports.UpdateSkuBalanceDto = exports.UpdateStockMovementDto = exports.CreateHandoverDto = exports.HandoverTypeLineDto = exports.HandoverQueryDto = exports.FactoryTrackingQueryDto = exports.FactoryAssessmentDto = exports.ReviewStockDto = exports.CreateTransferDto = exports.CreateStockOutDto = exports.CreateStockInDto = exports.StockLineDto = exports.StockOldHistoryQueryDto = exports.StockNewHistoryQueryDto = void 0;
 const openapi = require("@nestjs/swagger");
 const class_validator_1 = require("class-validator");
 const class_transformer_1 = require("class-transformer");
+const swagger_1 = require("@nestjs/swagger");
 const history_range_dto_1 = require("../../../common/dto/history-range.dto");
 const decimal_string_validator_1 = require("../../../common/dto/decimal-string.validator");
+class StockNewHistoryQueryDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
+    static _OPENAPI_METADATA_FACTORY() {
+        return {};
+    }
+}
+exports.StockNewHistoryQueryDto = StockNewHistoryQueryDto;
+class StockOldHistoryQueryDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
+    goldTypeId;
+    q;
+    static _OPENAPI_METADATA_FACTORY() {
+        return { goldTypeId: { required: false, type: () => String }, q: { required: false, type: () => String } };
+    }
+}
+exports.StockOldHistoryQueryDto = StockOldHistoryQueryDto;
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ description: 'ປະເພດຄຳ ID' }),
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], StockOldHistoryQueryDto.prototype, "goldTypeId", void 0);
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ description: 'ຄົ້ນຫາ (ແຫຼ່ງ, ປະເພດ, ຫຼື ລະຫັດບິນ)' }),
+    (0, class_validator_1.IsOptional)(),
+    (0, history_range_dto_1.BlankIsAbsent)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], StockOldHistoryQueryDto.prototype, "q", void 0);
 class StockLineDto {
     /** Stock (NEW) lines reference a SKU. */
     goldSkuId;

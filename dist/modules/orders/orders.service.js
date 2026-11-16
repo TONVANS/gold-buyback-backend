@@ -462,20 +462,25 @@ let OrdersService = class OrdersService {
     }
     async list(status, query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const searchWhere = history_range_service_1.HistoryRangeService.orderSearchWhere(query.search, true);
         /*
          * Order ທີ່ຍັງບໍ່ທັນປິດ (ຍັງສັ່ງຊ່າງ / ລໍຖ້າຮັບເຄື່ອງ ຫຼື ຍັງມີຍອດເງິນມັດຈຳຄ້າງຄືນ)
          * ຕ້ອງປາກົດຢູ່ໜ້າຈໍຈົນກວ່າຈະສຳເລັດຄົບຖ້ວນ ເຊັ່ນດຽວກັບ Module ຝາກສິນຄ້າ,
          * ເພື່ອບໍ່ໃຫ້ບິນຄ້າງຂ້າມມື້ຫາຍໄປຈາກໜ້າຈໍເມື່ອຂຶ້ນມື້ໃໝ່.
+         * ເມື່ອມີຕົວກອງຊ່ວງເວລາ (start_time / end_time), ກອງຕາມຊ່ວງ timestamp ທີ່ຂໍໂດຍກົງ.
          */
-        const advGroups = await this.prisma.advanceLedger.groupBy({
-            by: ['orderId'],
-            where: { deletedAt: null },
-            _sum: { amountIn: true, amountOut: true },
-        });
-        const unsettledOrderIds = advGroups
-            .filter((g) => (0, domain_1.dec)(g._sum.amountIn?.toFixed() ?? 0).gt((0, domain_1.dec)(g._sum.amountOut?.toFixed() ?? 0)))
-            .map((g) => g.orderId);
-        const inRange = { createdAt: history_range_service_1.HistoryRangeService.window(range) };
+        const needUnsettledIds = !timeWin && (!status || status === 'COMPLETED');
+        const unsettledOrderIds = needUnsettledIds
+            ? (await this.prisma.advanceLedger.groupBy({
+                by: ['orderId'],
+                where: { deletedAt: null },
+                _sum: { amountIn: true, amountOut: true },
+            }))
+                .filter((g) => (0, domain_1.dec)(g._sum.amountIn?.toFixed() ?? 0).gt((0, domain_1.dec)(g._sum.amountOut?.toFixed() ?? 0)))
+                .map((g) => g.orderId)
+            : [];
+        const inRange = { createdAt: timeWin ?? history_range_service_1.HistoryRangeService.window(range) };
         const stillOpen = {
             status: { not: 'CANCELLED' },
             OR: [
@@ -483,9 +488,12 @@ let OrdersService = class OrdersService {
                 ...(unsettledOrderIds.length > 0 ? [{ id: { in: unsettledOrderIds } }] : []),
             ],
         };
-        const where = {
-            deletedAt: null,
-            ...(status
+        const dateOrStatusWhere = timeWin
+            ? {
+                ...inRange,
+                ...(status ? { status } : {}),
+            }
+            : status
                 ? {
                     status,
                     ...(status === 'CANCELLED'
@@ -499,7 +507,13 @@ let OrdersService = class OrdersService {
                             }
                             : {}),
                 }
-                : { OR: [inRange, stillOpen] }),
+                : { OR: [inRange, stillOpen] };
+        const andClauses = [dateOrStatusWhere];
+        if (searchWhere)
+            andClauses.push(searchWhere);
+        const where = {
+            deletedAt: null,
+            AND: andClauses,
         };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.order.findMany({

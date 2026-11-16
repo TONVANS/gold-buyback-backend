@@ -22,7 +22,6 @@ const roles_decorator_1 = require("../../common/decorators/roles.decorator");
 const requires_shift_decorator_1 = require("../../common/decorators/requires-shift.decorator");
 const current_user_decorator_1 = require("../../common/decorators/current-user.decorator");
 const swagger_1 = require("@nestjs/swagger");
-const history_range_dto_1 = require("../../common/dto/history-range.dto");
 let StockController = class StockController {
     stock;
     prisma;
@@ -149,7 +148,7 @@ __decorate([
     __param(0, (0, common_1.Query)()),
     __param(1, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [history_range_dto_1.HistoryRangeDto, Object]),
+    __metadata("design:paramtypes", [stock_dto_1.StockNewHistoryQueryDto, Object]),
     __metadata("design:returntype", void 0)
 ], StockController.prototype, "newHistory", null);
 __decorate([
@@ -165,7 +164,7 @@ __decorate([
     __param(0, (0, common_1.Query)()),
     __param(1, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [history_range_dto_1.HistoryRangeDto, Object]),
+    __metadata("design:paramtypes", [stock_dto_1.StockOldHistoryQueryDto, Object]),
     __metadata("design:returntype", void 0)
 ], StockController.prototype, "oldHistory", null);
 __decorate([

@@ -1050,8 +1050,32 @@ let StockService = class StockService {
     }
     async newHistory(query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const q = query.search?.trim();
         // businessDate is a DATE column, so the inclusive end is the day itself.
-        const where = { deletedAt: null, businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) };
+        // ເມື່ອມີ start_time / end_time ໃຫ້ກອງຕາມ timestamp createdAt ພາຍໃນຊ່ວງທີ່ລະບຸ.
+        const where = {
+            deletedAt: null,
+            ...(timeWin
+                ? { createdAt: timeWin }
+                : { businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) }),
+            ...(q
+                ? {
+                    OR: [
+                        { partnerLabel: { contains: q, mode: 'insensitive' } },
+                        { typeLabel: { contains: q, mode: 'insensitive' } },
+                        { movement: { code: { contains: q, mode: 'insensitive' } } },
+                        {
+                            movement: {
+                                lines: {
+                                    some: { goldSku: { fullSkuName: { contains: q, mode: 'insensitive' } } },
+                                },
+                            },
+                        },
+                    ],
+                }
+                : {}),
+        };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.stockNewLedger.findMany({
                 where,
@@ -1079,21 +1103,49 @@ let StockService = class StockService {
     }
     async oldHistory(query, user) {
         const range = this.range.resolve(query, user);
-        const where = { deletedAt: null, businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) };
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const q = (query.q ?? query.search)?.trim();
+        const where = {
+            deletedAt: null,
+            ...(timeWin
+                ? { createdAt: timeWin }
+                : { businessDate: history_range_service_1.HistoryRangeService.dayWindow(range) }),
+            ...(query.goldTypeId ? { goldTypeId: query.goldTypeId } : {}),
+            ...(q
+                ? {
+                    OR: [
+                        { partnerLabel: { contains: q, mode: 'insensitive' } },
+                        { typeLabel: { contains: q, mode: 'insensitive' } },
+                        { goldType: { nameLo: { contains: q, mode: 'insensitive' } } },
+                        { movement: { code: { contains: q, mode: 'insensitive' } } },
+                    ],
+                }
+                : {}),
+        };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.stockOldLedger.findMany({
                 where,
                 include: {
                     goldType: true,
                     movement: {
-                        include: {
-                            lines: {
-                                include: {
-                                    goldSku: { include: { goldItem: true } },
-                                    goldType: true,
-                                    goldItem: true,
-                                },
-                            },
+                        select: {
+                            id: true,
+                            code: true,
+                            scope: true,
+                            type: true,
+                            status: true,
+                            partnerId: true,
+                            transformType: true,
+                            goldPercent: true,
+                            expectedReturnG: true,
+                            totalQuantity: true,
+                            totalGoldG: true,
+                            totalCost: true,
+                            pricePerG: true,
+                            pricePerBaht: true,
+                            laborFeeThb: true,
+                            note: true,
+                            createdAt: true,
                             partner: true,
                         },
                     },
@@ -1853,6 +1905,10 @@ let StockService = class StockService {
                         data: { deletedAt: new Date() },
                     });
                 }
+                await this.apar.recomputeCashRunningTotals(tx, cashAparRow.side, cashAparRow.currency, cashAparRow.partnerId);
+                if (cashPartnerId && cashPartnerId !== cashAparRow.partnerId) {
+                    await this.apar.recomputeCashRunningTotals(tx, cashAparRow.side, cashAparRow.currency, cashPartnerId);
+                }
             }
             else if (movement.type === 'IN' && laborFeeThb.gt(0)) {
                 await this.apar.postCash(tx, {
@@ -1987,10 +2043,22 @@ let StockService = class StockService {
                 await this.recomputeGoldApArRunningTotals(tx, movement.partnerId, aparRow?.side ?? 'AP');
             }
             // 6. Soft-delete CashApArLedger row
+            const cashAparRows = await tx.cashApArLedger.findMany({
+                where: { refId: id, deletedAt: null },
+                select: { side: true, currency: true, partnerId: true },
+            });
             await tx.cashApArLedger.updateMany({
                 where: { refId: id, deletedAt: null },
                 data: { deletedAt: now },
             });
+            const seenCashStreams = new Set();
+            for (const cr of cashAparRows) {
+                const key = `${cr.side}:${cr.currency}:${cr.partnerId ?? ''}`;
+                if (seenCashStreams.has(key))
+                    continue;
+                seenCashStreams.add(key);
+                await this.apar.recomputeCashRunningTotals(tx, cr.side, cr.currency, cr.partnerId);
+            }
             await this.audit.record({
                 actorId: user.id,
                 action: 'DELETE',
@@ -2090,7 +2158,16 @@ let StockService = class StockService {
         });
         if (!row)
             throw new common_1.NotFoundException('ບໍ່ພົບລາຍການປະຫວັດສາງຄຳເກົ່າ');
-        const day = await this.businessDay.current();
+        if (row.typeLabel.startsWith('Buyback') ||
+            row.typeLabel.startsWith('Exchange') ||
+            row.typeLabel.startsWith('Handover') ||
+            row.typeLabel.startsWith('ມອບຄຳ')) {
+            throw new common_1.BadRequestException(`ບໍ່ສາມາດແກ້ໄຂລາຍການທີ່ສ້າງຈາກລະບົບ ${row.typeLabel.split(' ')[0]} ໂດຍກົງໄດ້ — ກະລຸນາຈັດການຜ່ານລະບົບຕົ້ນທາງ`);
+        }
+        const rowDay = await this.prisma.businessDay.findFirst({
+            where: { date: row.businessDate },
+        });
+        const day = rowDay ?? (await this.businessDay.current());
         const isIn = toDec(row.goldInG).gt(0) || toDec(row.goldOutG).eq(0);
         const newWeight = dto.weightG !== undefined ? (0, domain_1.dec)(dto.weightG) : isIn ? toDec(row.goldInG) : toDec(row.goldOutG);
         if (newWeight.lte(0))
@@ -2153,7 +2230,16 @@ let StockService = class StockService {
         if (row.movementId) {
             return this.deleteMovement(row.movementId, user);
         }
-        const day = await this.businessDay.current();
+        if (row.typeLabel.startsWith('Buyback') ||
+            row.typeLabel.startsWith('Exchange') ||
+            row.typeLabel.startsWith('Handover') ||
+            row.typeLabel.startsWith('ມອບຄຳ')) {
+            throw new common_1.BadRequestException(`ບໍ່ສາມາດລຶບລາຍການທີ່ສ້າງຈາກລະບົບ ${row.typeLabel.split(' ')[0]} ໂດຍກົງໄດ້ — ກະລຸນາຈັດການຜ່ານລະບົບຕົ້ນທາງ`);
+        }
+        const rowDay = await this.prisma.businessDay.findFirst({
+            where: { date: row.businessDate },
+        });
+        const day = rowDay ?? (await this.businessDay.current());
         const now = new Date();
         return this.prisma.$transaction(async (tx) => {
             await this.adjustOldTypeBalance(tx, day.id, row.goldTypeId, {
@@ -2225,42 +2311,50 @@ let StockService = class StockService {
         });
     }
     async recomputeNewLedgerRunningTotals(tx) {
-        const rows = await tx.stockNewLedger.findMany({
-            where: { deletedAt: null },
-            orderBy: [{ businessDate: 'asc' }, { sequence: 'asc' }],
-        });
-        let runningWeight = (0, domain_1.dec)(0);
-        let runningCost = (0, domain_1.dec)(0);
-        for (const row of rows) {
-            runningWeight = runningWeight.plus(toDec(row.goldInG)).minus(toDec(row.goldOutG));
-            runningCost = runningCost.plus(toDec(row.priceIn)).minus(toDec(row.priceOut));
-            await tx.stockNewLedger.update({
-                where: { id: row.id },
-                data: {
-                    weightG: D(runningWeight),
-                    cost: D(runningCost),
-                },
-            });
-        }
+        await tx.$executeRaw `
+      WITH calculated AS (
+        SELECT 
+          id,
+          SUM("goldInG" - "goldOutG") OVER (
+            ORDER BY "businessDate" ASC, sequence ASC
+          ) AS new_weight_g,
+          SUM("priceIn" - "priceOut") OVER (
+            ORDER BY "businessDate" ASC, sequence ASC
+          ) AS new_cost
+        FROM stock_new_ledger
+        WHERE "deletedAt" IS NULL
+      )
+      UPDATE stock_new_ledger l
+      SET 
+        "weightG" = c.new_weight_g,
+        cost = c.new_cost
+      FROM calculated c
+      WHERE l.id = c.id
+        AND (l."weightG" != c.new_weight_g OR l.cost != c.new_cost);
+    `;
     }
     async recomputeOldLedgerRunningTotals(tx) {
-        const rows = await tx.stockOldLedger.findMany({
-            where: { deletedAt: null },
-            orderBy: [{ businessDate: 'asc' }, { sequence: 'asc' }],
-        });
-        let runningWeight = (0, domain_1.dec)(0);
-        let runningCost = (0, domain_1.dec)(0);
-        for (const row of rows) {
-            runningWeight = runningWeight.plus(toDec(row.goldInG)).minus(toDec(row.goldOutG));
-            runningCost = runningCost.plus(toDec(row.priceIn)).minus(toDec(row.priceOut));
-            await tx.stockOldLedger.update({
-                where: { id: row.id },
-                data: {
-                    weightG: D(runningWeight),
-                    cost: D(runningCost),
-                },
-            });
-        }
+        await tx.$executeRaw `
+      WITH calculated AS (
+        SELECT 
+          id,
+          SUM("goldInG" - "goldOutG") OVER (
+            ORDER BY "businessDate" ASC, sequence ASC
+          ) AS new_weight_g,
+          SUM("priceIn" - "priceOut") OVER (
+            ORDER BY "businessDate" ASC, sequence ASC
+          ) AS new_cost
+        FROM stock_old_ledger
+        WHERE "deletedAt" IS NULL
+      )
+      UPDATE stock_old_ledger l
+      SET 
+        "weightG" = c.new_weight_g,
+        cost = c.new_cost
+      FROM calculated c
+      WHERE l.id = c.id
+        AND (l."weightG" != c.new_weight_g OR l.cost != c.new_cost);
+    `;
     }
     async recomputeGoldApArRunningTotals(tx, partnerId, side) {
         const rows = await tx.goldApArLedger.findMany({

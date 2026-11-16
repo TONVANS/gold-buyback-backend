@@ -179,7 +179,7 @@ export class AdminService {
 
     const [
       buybacks, exchanges, credits, orders, movements, skus,
-      goldTypes, goldItems, cabinets, partners, ieCategories, ieTransactions,
+      goldTypes, goldItems, cabinets, partners, branches, employees, ieCategories, ieTransactions,
       aparCategories, consignments, handovers, users, jewelryFees, barFees,
       cashTxns, bankTxns,
     ] = await Promise.all([
@@ -193,6 +193,8 @@ export class AdminService {
       this.prisma.goldItem.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
       this.prisma.cabinet.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
       this.prisma.partnerSource.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
+      this.prisma.branch.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
+      this.prisma.employee.findMany({ where: gone, select: { ...pick, code: true, fullName: true } }),
       this.prisma.incomeExpenseCategory.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
       this.prisma.incomeExpenseTransaction.findMany({ where: gone, select: { ...pick, code: true, amount: true, currency: true } }),
       this.prisma.apArCashCategory.findMany({ where: gone, select: { ...pick, code: true, nameLo: true } }),
@@ -218,6 +220,8 @@ export class AdminService {
       ...goldItems.map((r) => ({ entity: 'GoldItem', labelLo: 'ລາຍການຄຳ', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),
       ...cabinets.map((r) => ({ entity: 'Cabinet', labelLo: 'ຕູ້ເຄື່ອງ', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),
       ...partners.map((r) => ({ entity: 'PartnerSource', labelLo: 'ແຫຼ່ງຮັບເຂົ້າ/ສົ່ງອອກ', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),
+      ...branches.map((r) => ({ entity: 'Branch', labelLo: 'ສັງກັດ / ສາຂາ', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),
+      ...employees.map((r) => ({ entity: 'Employee', labelLo: 'ພະນັກງານ', id: r.id, code: r.code, detail: r.fullName, deletedAt: r.deletedAt })),
       ...ieCategories.map((r) => ({ entity: 'IncomeExpenseCategory', labelLo: 'ລາຍການຮັບຈ່າຍ', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),
       ...ieTransactions.map((r) => ({ entity: 'IncomeExpenseTransaction', labelLo: 'ທຸລະກຳ ຮັບ/ຈ່າຍ', id: r.id, code: r.code, detail: money(r.amount, r.currency), deletedAt: r.deletedAt })),
       ...aparCategories.map((r) => ({ entity: 'ApArCashCategory', labelLo: 'ລາຍການ AP-AR (Cash)', id: r.id, code: r.code, detail: r.nameLo, deletedAt: r.deletedAt })),

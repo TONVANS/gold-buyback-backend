@@ -97,11 +97,11 @@ __decorate([
 /**
  * ຕົວກອງຂອງລາຍການປະຫວັດ.
  *
- * ຕ້ອງສືບທອດ `HistoryRangeDto` ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
+ * ຕ້ອງສືບທອດ `TimeSearchHistoryRangeDto` (`HistoryRangeDto`) ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
  * query ໃດທີ່ບໍ່ມີໃນ DTO ຈະຖືກປະຕິເສດ 400 ເຖິງແມ່ນ handler ຈະອ່ານມັນດ້ວຍ
  * `@Query('...')` ກໍຕາມ.
  */
-class ListOrderDto extends history_range_dto_1.HistoryRangeDto {
+class ListOrderDto extends history_range_dto_1.TimeSearchHistoryRangeDto {
     status;
     static _OPENAPI_METADATA_FACTORY() {
         return { status: { required: false, enum: ["COMPLETED", "CANCELLED", "ORDER_PLACED", "SENT_TO_SMITH", "RECEIVED_FROM_SMITH", "AWAITING_PICKUP"], enum: [

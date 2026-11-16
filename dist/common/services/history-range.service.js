@@ -82,6 +82,61 @@ let HistoryRangeService = class HistoryRangeService {
     static window(range) {
         return { gte: range.from, lt: range.until };
     }
+    parseTime(value, label) {
+        const match = value.trim().match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/);
+        if (!match) {
+            throw new common_1.BadRequestException(`${label} ບໍ່ຖືກຕ້ອງ (ຮູບແບບ HH:mm)`);
+        }
+        return {
+            hours: Number(match[1]),
+            minutes: Number(match[2]),
+            seconds: match[3] ? Number(match[3]) : 0,
+            hasSeconds: Boolean(match[3]),
+        };
+    }
+    /**
+     * ແປງ start_time - end_time (ຮ່ວມກັບ range.from / range.to ໃນເຂດເວລາຮ້ານ)
+     * ເປັນຊ່ວງ timestamp `{ gte, lt }` ສຳລັບ Prisma. ຖ້າບໍ່ໄດ້ສົ່ງມາທັງຄູ່ = null.
+     */
+    resolveTimeWindow(range, query) {
+        const rawStart = query.start_time ?? query.startTime;
+        const rawEnd = query.end_time ?? query.endTime;
+        if (!rawStart && !rawEnd)
+            return null;
+        const startBound = rawStart
+            ? (() => {
+                const t = this.parseTime(rawStart, 'start_time');
+                return new Date(range.from.getFullYear(), range.from.getMonth(), range.from.getDate(), t.hours, t.minutes, t.seconds, 0);
+            })()
+            : range.from;
+        const endBound = rawEnd
+            ? (() => {
+                const t = this.parseTime(rawEnd, 'end_time');
+                return t.hasSeconds
+                    ? new Date(range.to.getFullYear(), range.to.getMonth(), range.to.getDate(), t.hours, t.minutes, t.seconds + 1, 0)
+                    : new Date(range.to.getFullYear(), range.to.getMonth(), range.to.getDate(), t.hours, t.minutes + 1, 0, 0);
+            })()
+            : range.until;
+        if (startBound.getTime() > endBound.getTime() - 1) {
+            throw new common_1.BadRequestException('start_time ຕ້ອງບໍ່ຫຼັງ end_time');
+        }
+        return { gte: startBound, lt: endBound };
+    }
+    /** ຕົວກອງຄົ້ນຫາຮ່ວມກັນສຳລັບ Order (ເບີໂທລູກຄ້າ / ເລກບິນ / ຊື່ພະນັກງານຮັບ / ລະຫັດ Order). */
+    static orderSearchWhere(search, includeSupplier = false) {
+        const q = search?.trim();
+        if (!q)
+            return undefined;
+        return {
+            OR: [
+                { customer: { phone: { contains: q, mode: 'insensitive' } } },
+                { billNo: { contains: q, mode: 'insensitive' } },
+                { staffName: { contains: q, mode: 'insensitive' } },
+                { code: { contains: q, mode: 'insensitive' } },
+                ...(includeSupplier ? [{ supplier: { nameLo: { contains: q, mode: 'insensitive' } } }] : []),
+            ],
+        };
+    }
     /**
      * A Prisma filter for a DATE-only column such as `businessDate`.
      *

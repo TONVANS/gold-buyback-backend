@@ -57,10 +57,40 @@ let SkusService = SkusService_1 = class SkusService {
     static formatGrams(weightG) {
         return weightG.toDecimalPlaces(3).toFixed(3);
     }
+    /**
+     * ແປງນ້ຳໜັກ (g) ເປັນຫົວໜ່ວຍນ້ຳໜັກຄຳ:
+     * - 7.5 g   -> 2ສະຫຼຶງ
+     * - 3.75 g  -> 1ສະຫຼຶງ
+     * - 1.87 g  (ຫຼື 1.875 g) -> 5ຫຸນ
+     * - 1.12 g  (ຫຼື 1.125 g) -> 3ຫຸນ
+     * - 0.75 g  -> 2ຫຸນ
+     * - 0.37 g  (ຫຼື 0.375 g) -> 1ຫຸນ
+     * - 1 g     -> 1ກຼາມ
+     * - ອື່ນໆ   -> X ບາດ
+     */
+    static formatWeightUnit(weightG) {
+        const n = weightG.toNumber();
+        if (n === 7.5)
+            return '2ສະຫຼຶງ';
+        if (n === 3.75)
+            return '1ສະຫຼຶງ';
+        if (n === 1.87 || n === 1.875)
+            return '5ຫຸນ';
+        if (n === 1.12 || n === 1.125)
+            return '3ຫຸນ';
+        if (n === 0.75)
+            return '2ຫຸນ';
+        if (n === 0.37 || n === 0.375)
+            return '1ຫຸນ';
+        if (n === 1)
+            return '1ກຼາມ';
+        const baht = SkusService_1.formatBaht(SkusService_1.bahtWeight(weightG));
+        return `${baht} ບາດ`;
+    }
     /** The derived name — exported so the web client can preview it live. */
     static buildFullSkuName(nameLo, weightG) {
-        const baht = SkusService_1.formatBaht(SkusService_1.bahtWeight(weightG));
-        return `${nameLo.trim()} ${baht} ບາດ (${SkusService_1.formatGrams(weightG)} g)`;
+        const unit = SkusService_1.formatWeightUnit(weightG);
+        return `${nameLo.trim()} ${unit}`;
     }
     parseWeight(raw) {
         const weight = (0, domain_1.dec)(raw);

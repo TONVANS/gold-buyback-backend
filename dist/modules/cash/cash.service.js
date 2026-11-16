@@ -410,6 +410,53 @@ let CashService = class CashService {
      *   ອອກ   = ຈ່າຍ Buyback + ຈ່າຍ ປ່ຽນເປັນເງິນ + ມອບເງິນຄືນ/ປິດກະ
      * ສະນັ້ນຈຶ່ງນັບສະເພາະ refType ເຫຼົ່ານີ້ ແລະ ສະເພາະກະນັ້ນ — ບໍ່ແມ່ນທັງມື້.
      */
+    async calculateShiftWalletBalance(shiftId, client = this.prisma) {
+        const IN_REFS = ['CashRequest', 'GoldCredit'];
+        const OUT_REFS = ['Buyback', 'GoldExchange', 'CashRequest', 'ShiftClose'];
+        const rows = await client.cashTransaction.findMany({
+            where: {
+                shiftId,
+                deletedAt: null,
+                refType: { in: [...new Set([...IN_REFS, ...OUT_REFS])] },
+            },
+            select: { currency: true, type: true, amount: true, refType: true },
+        });
+        return CURRENCIES.map((currency) => {
+            let inflow = (0, domain_1.dec)(0);
+            let outflow = (0, domain_1.dec)(0);
+            for (const row of rows) {
+                if (row.currency !== currency)
+                    continue;
+                const amount = (0, domain_1.dec)(row.amount.toFixed());
+                // Cash movements from the perspective of the cashier's drawer (wallet):
+                let isDrawerInflow = false;
+                if (row.refType === 'CashRequest') {
+                    // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
+                    // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
+                    isDrawerInflow = row.type === 'OUT';
+                }
+                else if (row.refType === 'GoldCredit') {
+                    isDrawerInflow = true;
+                }
+                else if (['Buyback', 'GoldExchange', 'ShiftClose'].includes(row.refType ?? '')) {
+                    isDrawerInflow = false;
+                }
+                else {
+                    isDrawerInflow = CASH_SIGN[row.type] === 1;
+                }
+                if (isDrawerInflow)
+                    inflow = inflow.plus(amount);
+                else
+                    outflow = outflow.plus(amount);
+            }
+            return {
+                currency,
+                inflow: inflow.toFixed(),
+                outflow: outflow.toFixed(),
+                balance: inflow.minus(outflow).toFixed(),
+            };
+        });
+    }
     async walletBalance(userId) {
         const shift = await this.prisma.shift.findFirst({
             where: { userId, closedAt: null, status: 'OPEN' },
@@ -427,54 +474,11 @@ let CashService = class CashService {
                 })),
             };
         }
-        const IN_REFS = ['CashRequest', 'GoldCredit'];
-        const OUT_REFS = ['Buyback', 'GoldExchange', 'CashRequest', 'ShiftClose'];
-        const rows = await this.prisma.cashTransaction.findMany({
-            where: {
-                shiftId: shift.id,
-                deletedAt: null,
-                refType: { in: [...new Set([...IN_REFS, ...OUT_REFS])] },
-            },
-            select: { currency: true, type: true, amount: true, refType: true },
-        });
+        const balances = await this.calculateShiftWalletBalance(shift.id, this.prisma);
         return {
             shiftId: shift.id,
             openedAt: shift.openedAt,
-            balances: CURRENCIES.map((currency) => {
-                let inflow = (0, domain_1.dec)(0);
-                let outflow = (0, domain_1.dec)(0);
-                for (const row of rows) {
-                    if (row.currency !== currency)
-                        continue;
-                    const amount = (0, domain_1.dec)(row.amount.toFixed());
-                    // Cash movements from the perspective of the cashier's drawer (wallet):
-                    let isDrawerInflow = false;
-                    if (row.refType === 'CashRequest') {
-                        // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
-                        // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
-                        isDrawerInflow = row.type === 'OUT';
-                    }
-                    else if (row.refType === 'GoldCredit') {
-                        isDrawerInflow = true;
-                    }
-                    else if (['Buyback', 'GoldExchange', 'ShiftClose'].includes(row.refType ?? '')) {
-                        isDrawerInflow = false;
-                    }
-                    else {
-                        isDrawerInflow = CASH_SIGN[row.type] === 1;
-                    }
-                    if (isDrawerInflow)
-                        inflow = inflow.plus(amount);
-                    else
-                        outflow = outflow.plus(amount);
-                }
-                return {
-                    currency,
-                    inflow: inflow.toFixed(),
-                    outflow: outflow.toFixed(),
-                    balance: inflow.minus(outflow).toFixed(),
-                };
-            }),
+            balances,
         };
     }
     async cashHistory(query, user) {

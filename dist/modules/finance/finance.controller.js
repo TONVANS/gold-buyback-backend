@@ -15,13 +15,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.FinanceController = void 0;
 const openapi = require("@nestjs/swagger");
 const common_1 = require("@nestjs/common");
+const client_1 = require("@prisma/client");
 const finance_service_1 = require("./finance.service");
 const advance_service_1 = require("../../common/services/advance.service");
 const finance_dto_1 = require("./dto/finance.dto");
 const roles_decorator_1 = require("../../common/decorators/roles.decorator");
 const current_user_decorator_1 = require("../../common/decorators/current-user.decorator");
 const swagger_1 = require("@nestjs/swagger");
-const history_range_dto_1 = require("../../common/dto/history-range.dto");
 /** The §3.7 and §9 modules added by the updated TOR, plus Module Advace (§7). */
 let FinanceController = class FinanceController {
     finance;
@@ -114,6 +114,9 @@ let FinanceController = class FinanceController {
     }
     addEntry(side, dto, user) {
         return this.finance.addApArEntry(side, dto, user);
+    }
+    deleteEntry(side, id, user) {
+        return this.finance.deleteApArEntry(side, id, user);
     }
     /** ປຸ່ມ Payment — settles the Supplier's balance and moves the money. */
     settle(side, dto, user) {
@@ -297,7 +300,7 @@ __decorate([
     __param(0, (0, common_1.Query)()),
     __param(1, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [history_range_dto_1.HistoryRangeDto, Object]),
+    __metadata("design:paramtypes", [finance_dto_1.AdvanceHistoryDto, Object]),
     __metadata("design:returntype", void 0)
 ], FinanceController.prototype, "advanceHistory", null);
 __decorate([
@@ -344,31 +347,34 @@ __decorate([
 ], FinanceController.prototype, "deleteApArCategory", null);
 __decorate([
     openapi.ApiParam({ name: "side", enum: ["AP", "AR"] }),
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER'),
     (0, common_1.Get)('ap-ar/:side/totals'),
     openapi.ApiResponse({ status: 200 }),
-    __param(0, (0, common_1.Param)('side')),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], FinanceController.prototype, "totals", null);
 __decorate([
     openapi.ApiParam({ name: "side", enum: ["AP", "AR"] }),
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER'),
     (0, common_1.Get)('ap-ar/:side/partners'),
     openapi.ApiResponse({ status: 200 }),
-    __param(0, (0, common_1.Param)('side')),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], FinanceController.prototype, "byPartner", null);
 __decorate([
     openapi.ApiParam({ name: "side", enum: ["AP", "AR"] }),
+    (0, roles_decorator_1.Roles)('ADMIN', 'MANAGER', 'FINANCIAL_CONTROLLER'),
     (0, common_1.Get)('ap-ar/:side/history'),
     openapi.ApiResponse({ status: 200 }),
-    __param(0, (0, common_1.Param)('side')),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
     __param(1, (0, common_1.Query)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, history_range_dto_1.HistoryRangeDto, Object]),
+    __metadata("design:paramtypes", [String, finance_dto_1.ApArCashHistoryDto, Object]),
     __metadata("design:returntype", void 0)
 ], FinanceController.prototype, "history", null);
 __decorate([
@@ -376,7 +382,7 @@ __decorate([
     (0, roles_decorator_1.Roles)('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)('ap-ar/:side/entries'),
     openapi.ApiResponse({ status: 201, type: Object }),
-    __param(0, (0, common_1.Param)('side')),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
@@ -384,12 +390,24 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], FinanceController.prototype, "addEntry", null);
 __decorate([
+    openapi.ApiParam({ name: "side", enum: ["AP", "AR"] }),
+    (0, roles_decorator_1.Roles)('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Delete)('ap-ar/:side/entries/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", void 0)
+], FinanceController.prototype, "deleteEntry", null);
+__decorate([
     openapi.ApiOperation({ summary: "\u0E9B\u0EB8\u0EC8\u0EA1 Payment \u2014 settles the Supplier's balance and moves the money." }),
     openapi.ApiParam({ name: "side", enum: ["AP", "AR"] }),
     (0, roles_decorator_1.Roles)('FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)('ap-ar/:side/settle'),
     openapi.ApiResponse({ status: 201, type: Object }),
-    __param(0, (0, common_1.Param)('side')),
+    __param(0, (0, common_1.Param)('side', new common_1.ParseEnumPipe(client_1.ApArSide))),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
