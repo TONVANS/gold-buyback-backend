@@ -58,22 +58,33 @@ let CreditService = class CreditService {
         this.pricingContext = pricingContext;
         this.range = range;
     }
+    detailInclude = {
+        customer: true,
+        goldItem: true,
+        cabinet: true,
+        receipts: {
+            include: { bankAccount: { select: { nameLo: true } } },
+            orderBy: { createdAt: 'asc' },
+        },
+    };
     /**
-     * Convert a receipt to LAK at the SELL rate (the shop is taking money in)
-     * and apply the §5.3 change caps.
-     */
-    /**
-     * Resolve every leg of one receipt.
+     * Resolve every leg of one receipt using Price Rate Sell (§5.3).
      *
      * A customer may pay part in cash and part by transfer, in more than one
-     * currency, against a single instalment. Each leg converts at its own
-     * rate; the change is computed on the TOTAL and charged to the last leg,
-     * so the legs still sum to exactly what was taken in.
+     * currency. LAK legs may not exceed the amount owed (nor be added once
+     * foreign legs already cover it), and any LAK change from foreign currency
+     * is attributed to foreign legs and capped at 1,000 THB / 100 USD regardless
+     * of leg order.
      */
-    resolveReceipts(lines, rates, owed) {
+    resolveReceipts(lines, rates, owed, options) {
         if (lines.length === 0) {
+            if (options?.allowEmptyWhenZero && owed.eq(0)) {
+                return { lines: [], totalLak: (0, domain_1.dec)(0), changeLak: (0, domain_1.dec)(0) };
+            }
             throw new common_1.BadRequestException('ຕ້ອງມີລາຍການຮັບເງິນຢ່າງໜ້ອຍ 1 ລາຍການ');
         }
+        let lakLegsTotal = (0, domain_1.dec)(0);
+        let foreignLakTotal = (0, domain_1.dec)(0);
         const resolved = lines.map((dto) => {
             if (dto.method === 'BANK' && !dto.bankAccountId) {
                 throw new common_1.BadRequestException('ກະລຸນາເລືອກທະນາຄານ');
@@ -83,18 +94,41 @@ let CreditService = class CreditService {
                 throw new common_1.BadRequestException('ຈຳນວນເງິນຕ້ອງໃຫຍ່ກວ່າ 0');
             }
             const rate = pricing_context_service_1.PricingContextService.rateFor(rates, dto.currency, 'sell');
-            return { ...dto, amount, rate, amountLak: amount.mul(rate), changeLak: (0, domain_1.dec)(0) };
+            const amountLak = amount.mul(rate);
+            if (dto.currency === 'LAK') {
+                lakLegsTotal = lakLegsTotal.plus(amount);
+            }
+            else {
+                foreignLakTotal = foreignLakTotal.plus(amountLak);
+            }
+            return { ...dto, amount, rate, amountLak, changeLak: (0, domain_1.dec)(0) };
         });
         const totalLak = resolved.reduce((sum, l) => sum.plus(l.amountLak), (0, domain_1.dec)(0));
         const change = totalLak.gt(owed) ? totalLak.minus(owed) : (0, domain_1.dec)(0);
         if (change.gt(0)) {
-            const last = resolved[resolved.length - 1];
-            last.changeLak = change;
-            // §5.3: THB change ≤ 1,000 THB equivalent; USD change ≤ 100 USD.
-            // Checked against the leg the change comes out of.
-            const limit = CHANGE_LIMIT[last.currency];
-            if (limit && change.gt(limit.mul(last.rate))) {
-                throw new common_1.BadRequestException(`ເງິນທອນຈາກ ${last.currency} ປ້ອນໄດ້ບໍ່ເກີນ ${limit.toFixed(0)} ${last.currency}`);
+            if (lakLegsTotal.gt(owed)) {
+                throw new common_1.BadRequestException(`ຈຳນວນເງິນ LAK (${lakLegsTotal.toFixed(0)}) ຕ້ອງບໍ່ເກີນຍອດທີ່ຕ້ອງຮັບ (${owed.toFixed(0)})`);
+            }
+            if (lakLegsTotal.gt(0) && foreignLakTotal.gte(owed)) {
+                throw new common_1.BadRequestException('ຍອດສະກຸນເງິນຕ່າງປະເທດຄົບຍອດແລ້ວ ບໍ່ຄວນຮັບ LAK ເພີ່ມ');
+            }
+            // Attribute change across foreign-currency legs from last to first so an
+            // extra LAK leg at the end can never bypass the §5.3 foreign change cap.
+            let remainingChange = change;
+            for (let i = resolved.length - 1; i >= 0 && remainingChange.gt(0); i--) {
+                const leg = resolved[i];
+                if (leg.currency === 'LAK')
+                    continue;
+                const legChange = remainingChange.lte(leg.amountLak) ? remainingChange : leg.amountLak;
+                const limit = CHANGE_LIMIT[leg.currency];
+                if (limit && legChange.gt(limit.mul(leg.rate))) {
+                    throw new common_1.BadRequestException(`ເງິນທອນຈາກ ${leg.currency} ປ້ອນໄດ້ບໍ່ເກີນ ${limit.toFixed(0)} ${leg.currency}`);
+                }
+                leg.changeLak = legChange;
+                remainingChange = remainingChange.minus(legChange);
+            }
+            if (remainingChange.gt(0)) {
+                throw new common_1.BadRequestException('ເງິນທອນເກີນຂອບເຂດທີ່ກຳນົດ');
             }
         }
         return { lines: resolved, totalLak, changeLak: change };
@@ -105,7 +139,7 @@ let CreditService = class CreditService {
      * spread across the body itself.
      */
     receiptLines(dto) {
-        if (dto.receipts?.length)
+        if (dto.receipts !== undefined)
             return dto.receipts;
         if (dto.receipt)
             return [dto.receipt];
@@ -114,10 +148,51 @@ let CreditService = class CreditService {
         }
         return [];
     }
+    async assertBankLegs(lines) {
+        const bankLegs = lines.filter((line) => line.method === 'BANK');
+        if (bankLegs.length === 0)
+            return;
+        if (bankLegs.some((line) => !line.bankAccountId)) {
+            throw new common_1.BadRequestException('ການຮັບເງິນແບບໂອນ ຕ້ອງເລືອກທະນາຄານ');
+        }
+        const ids = [...new Set(bankLegs.map((line) => line.bankAccountId))];
+        const open = await this.prisma.bankAccount.findMany({
+            where: { id: { in: ids }, isActive: true },
+            select: { id: true },
+        });
+        if (open.length !== ids.length) {
+            throw new common_1.BadRequestException('ບັນຊີທະນາຄານທີ່ເລືອກບໍ່ມີ ຫຼື ຖືກປິດໃຊ້ງານແລ້ວ');
+        }
+    }
+    async assertGoldItemAndCabinet(goldItemId, cabinetId) {
+        const item = await this.prisma.goldItem.findFirst({
+            where: { id: goldItemId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!item)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການຄຳ');
+        if (cabinetId) {
+            const cabinet = await this.prisma.cabinet.findFirst({
+                where: { id: cabinetId, deletedAt: null },
+                select: { id: true },
+            });
+            if (!cabinet)
+                throw new common_1.NotFoundException('ບໍ່ພົບຕູ້ເຄື່ອງ');
+        }
+    }
+    assertCreatorOrManager(createdById, user, message) {
+        if (createdById !== user.id && !['ADMIN', 'MANAGER'].includes(user.role)) {
+            throw new common_1.ConflictException(message);
+        }
+    }
     async create(dto, user, shiftId) {
         const context = await this.pricingContext.load();
+        const weightG = (0, domain_1.dec)(dto.weightG);
         const sellPrice = (0, domain_1.dec)(dto.sellPrice);
         const downPayment = (0, domain_1.dec)(dto.downPayment);
+        if (!weightG.isFinite() || weightG.lte(0)) {
+            throw new common_1.BadRequestException('ນ້ຳໜັກຕ້ອງໃຫຍ່ກວ່າ 0');
+        }
         if (sellPrice.lte(0))
             throw new common_1.BadRequestException('ລາຄາຂາຍຕ້ອງໃຫຍ່ກວ່າ 0');
         if (downPayment.isNegative())
@@ -125,11 +200,16 @@ let CreditService = class CreditService {
         if (downPayment.gt(sellPrice)) {
             throw new common_1.BadRequestException('ເງິນວາງດາວຕ້ອງບໍ່ເກີນລາຄາຂາຍ');
         }
+        await this.assertGoldItemAndCabinet(dto.goldItemId, dto.cabinetId);
+        const receiptInputs = this.receiptLines(dto);
+        await this.assertBankLegs(receiptInputs);
         const outstanding = sellPrice.minus(downPayment);
         // §5.3: the down payment received must cover the agreed down payment.
-        const receipt = this.resolveReceipts(this.receiptLines(dto), context.rates, downPayment);
+        const receipt = this.resolveReceipts(receiptInputs, context.rates, downPayment, {
+            allowEmptyWhenZero: true,
+        });
         if (receipt.totalLak.lt(downPayment)) {
-            throw new common_1.BadRequestException(`ຮັບເງິນ (${receipt.totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ຫນ້ອຍກວ່າເງິນວາງດາວ (${downPayment.toFixed(0)} LAK)`);
+            throw new common_1.BadRequestException(`ຮັບເງິນ (${receipt.totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ໜ້ອຍກວ່າເງິນວາງດາວ (${downPayment.toFixed(0)} LAK)`);
         }
         const customer = await this.prisma.customer.upsert({
             where: { phone: dto.phone },
@@ -144,7 +224,7 @@ let CreditService = class CreditService {
                     customerId: customer.id,
                     goldItemId: dto.goldItemId,
                     cabinetId: dto.cabinetId ?? null,
-                    weightG: D((0, domain_1.dec)(dto.weightG)),
+                    weightG: D(weightG),
                     quantity: dto.quantity,
                     sellPrice: D(sellPrice),
                     downPayment: D(downPayment),
@@ -165,7 +245,7 @@ let CreditService = class CreditService {
                         })),
                     },
                 },
-                include: { receipts: true, customer: true },
+                include: this.detailInclude,
             });
             await this.audit.record({
                 actorId: user.id,
@@ -186,6 +266,118 @@ let CreditService = class CreditService {
             return credit;
         });
     }
+    /** ແກ້ໄຂລາຍການສິນເຊື່ອ (ສະເພາະ PENDING). */
+    async update(id, dto, user) {
+        const existing = await this.prisma.goldCredit.findFirst({
+            where: { id, deletedAt: null },
+            include: { customer: true, receipts: true },
+        });
+        if (!existing)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
+        this.assertCreatorOrManager(existing.createdById, user, 'ມີພຽງຜູ້ສ້າງລາຍການ ຫຼື ຜູ້ຈັດການ ເທົ່ານັ້ນທີ່ແກ້ໄຂໄດ້');
+        if (existing.status !== 'PENDING') {
+            throw new common_1.ConflictException('ແກ້ໄຂໄດ້ສະເພາະລາຍການທີ່ລໍຖ້າອະນຸມັດ (PENDING)');
+        }
+        const nextPhone = dto.phone ?? existing.customer.phone;
+        const nextGoldItemId = dto.goldItemId ?? existing.goldItemId;
+        const nextCabinetId = dto.cabinetId !== undefined ? dto.cabinetId || null : existing.cabinetId;
+        const nextWeightG = (0, domain_1.dec)(dto.weightG ?? existing.weightG.toFixed());
+        const nextQuantity = dto.quantity ?? existing.quantity;
+        const nextSellPrice = (0, domain_1.dec)(dto.sellPrice ?? existing.sellPrice.toFixed());
+        const nextDownPayment = (0, domain_1.dec)(dto.downPayment ?? existing.downPayment.toFixed());
+        if (!nextWeightG.isFinite() || nextWeightG.lte(0)) {
+            throw new common_1.BadRequestException('ນ້ຳໜັກຕ້ອງໃຫຍ່ກວ່າ 0');
+        }
+        if (nextSellPrice.lte(0))
+            throw new common_1.BadRequestException('ລາຄາຂາຍຕ້ອງໃຫຍ່ກວ່າ 0');
+        if (nextDownPayment.isNegative())
+            throw new common_1.BadRequestException('ເງິນວາງດາວຕ້ອງບໍ່ຕິດລົບ');
+        if (nextDownPayment.gt(nextSellPrice)) {
+            throw new common_1.BadRequestException('ເງິນວາງດາວຕ້ອງບໍ່ເກີນລາຄາຂາຍ');
+        }
+        await this.assertGoldItemAndCabinet(nextGoldItemId, nextCabinetId);
+        const nextReceiptInputs = dto.receipts !== undefined
+            ? dto.receipts
+            : existing.receipts
+                .filter((r) => r.isDownPayment)
+                .map((r) => ({
+                method: r.method,
+                bankAccountId: r.bankAccountId ?? undefined,
+                currency: r.currency,
+                amount: r.amount.toFixed(),
+            }));
+        await this.assertBankLegs(nextReceiptInputs);
+        const context = await this.pricingContext.load();
+        const receipt = this.resolveReceipts(nextReceiptInputs, context.rates, nextDownPayment, {
+            allowEmptyWhenZero: true,
+        });
+        if (receipt.totalLak.lt(nextDownPayment)) {
+            throw new common_1.BadRequestException(`ຮັບເງິນ (${receipt.totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ໜ້ອຍກວ່າເງິນວາງດາວ (${nextDownPayment.toFixed(0)} LAK)`);
+        }
+        const outstanding = nextSellPrice.minus(nextDownPayment);
+        const customer = await this.prisma.customer.upsert({
+            where: { phone: nextPhone },
+            update: {},
+            create: { phone: nextPhone },
+        });
+        return this.prisma.$transaction(async (tx) => {
+            const claim = await tx.goldCredit.updateMany({
+                where: { id, status: 'PENDING', deletedAt: null },
+                data: {
+                    customerId: customer.id,
+                    goldItemId: nextGoldItemId,
+                    cabinetId: nextCabinetId,
+                    weightG: D(nextWeightG),
+                    quantity: nextQuantity,
+                    sellPrice: D(nextSellPrice),
+                    downPayment: D(nextDownPayment),
+                    outstanding: D(outstanding),
+                },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            await tx.creditReceipt.deleteMany({ where: { creditId: id, isDownPayment: true } });
+            if (receipt.lines.length > 0) {
+                await tx.creditReceipt.createMany({
+                    data: receipt.lines.map((line) => ({
+                        creditId: id,
+                        method: line.method,
+                        bankAccountId: line.bankAccountId ?? null,
+                        currency: line.currency,
+                        rate: D(line.rate),
+                        amount: D(line.amount),
+                        amountLak: D(line.amountLak),
+                        changeLak: D(line.changeLak),
+                        isDownPayment: true,
+                        createdById: user.id,
+                    })),
+                });
+            }
+            const saved = await tx.goldCredit.findUniqueOrThrow({
+                where: { id },
+                include: this.detailInclude,
+            });
+            await this.audit.record({
+                actorId: user.id,
+                action: 'UPDATE',
+                entity: 'GoldCredit',
+                entityId: id,
+                before: {
+                    sellPrice: existing.sellPrice.toFixed(),
+                    downPayment: existing.downPayment.toFixed(),
+                    outstanding: existing.outstanding.toFixed(),
+                },
+                after: {
+                    sellPrice: nextSellPrice.toFixed(),
+                    downPayment: nextDownPayment.toFixed(),
+                    outstanding: outstanding.toFixed(),
+                },
+                summary: `ແກ້ໄຂສິນເຊື່ອ ${existing.code} — ຕິດໜີ້ ${outstanding.toFixed(0)} LAK`,
+            }, tx);
+            return saved;
+        });
+    }
     /**
      * payment approves. On approval the down payment lands in cash/bank and the
      * outstanding balance is recognised as AR (Cash) — TOR §9.2.
@@ -201,11 +393,14 @@ let CreditService = class CreditService {
         this.approval.assertTransition(credit.status, next);
         const day = await this.businessDay.current();
         return this.prisma.$transaction(async (tx) => {
+            let downApplied = (0, domain_1.dec)(0);
             if (dto.decision === 'APPROVED') {
                 for (const receipt of credit.receipts) {
+                    downApplied = downApplied.plus((0, domain_1.dec)(receipt.amountLak.toFixed()).minus((0, domain_1.dec)(receipt.changeLak.toFixed())));
                     await this.recordReceiptMoney(tx, {
                         receipt,
                         businessDayId: day.id,
+                        shiftId: credit.shiftId,
                         note: `ເງິນວາງດາວສິນເຊື່ອ ${credit.code}`,
                         refId: credit.id,
                         createdById: user.id,
@@ -220,15 +415,20 @@ let CreditService = class CreditService {
                     createdById: user.id,
                 });
             }
-            const updated = await tx.goldCredit.update({
-                where: { id },
+            const claim = await tx.goldCredit.updateMany({
+                where: { id, status: credit.status, deletedAt: null },
                 data: {
                     status: next,
                     approvedById: user.id,
                     approvedAt: new Date(),
                     rejectReason: dto.decision === 'REJECTED' ? (dto.reason ?? null) : null,
+                    ...(dto.decision === 'APPROVED' ? { paidAmount: D(downApplied) } : {}),
                 },
             });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            const updated = await tx.goldCredit.findUniqueOrThrow({ where: { id } });
             await this.audit.record({
                 actorId: user.id,
                 action: dto.decision === 'APPROVED' ? 'APPROVE' : 'REJECT',
@@ -236,6 +436,7 @@ let CreditService = class CreditService {
                 entityId: id,
                 before: { status: credit.status },
                 after: { status: next },
+                summary: `${dto.decision === 'APPROVED' ? 'ອະນຸມັດ' : 'ປະຕິເສດ'} ສິນເຊື່ອ ${credit.code}`,
             }, tx);
             await this.notifications.notify({
                 kind: 'APPROVAL_RESULT',
@@ -250,8 +451,86 @@ let CreditService = class CreditService {
             return updated;
         });
     }
+    /** ຍົກເລີກລາຍການທີ່ຍັງລໍຖ້າອະນຸມັດ (PENDING). */
+    async cancel(id, dto, user) {
+        const credit = await this.prisma.goldCredit.findFirst({
+            where: { id, deletedAt: null },
+        });
+        if (!credit)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
+        if (credit.createdById !== user.id &&
+            !['PAYMENT', 'ADMIN', 'MANAGER'].includes(user.role)) {
+            throw new common_1.ConflictException('ທ່ານບໍ່ມີສິດຍົກເລີກລາຍການນີ້');
+        }
+        if (credit.status !== 'PENDING') {
+            throw new common_1.ConflictException('ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ລໍຖ້າອະນຸມັດ (PENDING)');
+        }
+        return this.prisma.$transaction(async (tx) => {
+            const claim = await tx.goldCredit.updateMany({
+                where: { id, status: 'PENDING', deletedAt: null },
+                data: {
+                    status: 'CANCELLED',
+                    rejectReason: dto.reason?.trim() || credit.rejectReason || null,
+                },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            const updated = await tx.goldCredit.findUniqueOrThrow({ where: { id } });
+            await this.audit.record({
+                actorId: user.id,
+                action: 'UPDATE',
+                entity: 'GoldCredit',
+                entityId: id,
+                before: { status: credit.status },
+                after: { status: 'CANCELLED', reason: dto.reason ?? null },
+                summary: `ຍົກເລີກສິນເຊື່ອ ${credit.code}${dto.reason ? ` (${dto.reason})` : ''}`,
+            }, tx);
+            if (credit.createdById !== user.id) {
+                await this.notifications.notify({
+                    kind: 'APPROVAL_RESULT',
+                    recipientUserId: credit.createdById,
+                    title: `ສິນເຊື່ອ ${credit.code} ຖືກຍົກເລີກ`,
+                    body: dto.reason ?? undefined,
+                    refType: 'GoldCredit',
+                    refId: id,
+                }, tx);
+            }
+            return updated;
+        });
+    }
+    /** Soft delete (ສະເພາະ PENDING / REJECTED / CANCELLED). */
+    async remove(id, user) {
+        const credit = await this.prisma.goldCredit.findFirst({
+            where: { id, deletedAt: null },
+        });
+        if (!credit)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
+        this.assertCreatorOrManager(credit.createdById, user, 'ມີພຽງຜູ້ສ້າງລາຍການ ຫຼື ຜູ້ຈັດການ ເທົ່ານັ້ນທີ່ລຶບໄດ້');
+        if (!['PENDING', 'REJECTED', 'CANCELLED'].includes(credit.status)) {
+            throw new common_1.ConflictException('ລຶບໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ອະນຸມັດ, ຖືກປະຕິເສດ ຫຼື ຍົກເລີກ');
+        }
+        return this.prisma.$transaction(async (tx) => {
+            const claim = await tx.goldCredit.updateMany({
+                where: { id, status: credit.status, deletedAt: null },
+                data: { deletedAt: new Date(), deletedById: user.id },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            await this.audit.record({
+                actorId: user.id,
+                action: 'DELETE',
+                entity: 'GoldCredit',
+                entityId: id,
+                before: { code: credit.code, status: credit.status },
+                summary: `ລຶບລາຍການສິນເຊື່ອ ${credit.code}`,
+            }, tx);
+            return { id, deleted: true };
+        });
+    }
     /** An instalment against an outstanding credit — draws down the AR. */
-    async addReceipt(id, dto, user) {
+    async addReceipt(id, dto, user, openShiftId) {
         const credit = await this.prisma.goldCredit.findFirst({ where: { id, deletedAt: null } });
         if (!credit)
             throw new common_1.NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
@@ -261,12 +540,33 @@ let CreditService = class CreditService {
         const outstanding = (0, domain_1.dec)(credit.outstanding.toFixed());
         if (outstanding.lte(0))
             throw new common_1.BadRequestException('ສິນເຊື່ອນີ້ຊຳຣະຄົບແລ້ວ');
+        const receiptInputs = this.receiptLines(dto);
+        await this.assertBankLegs(receiptInputs);
         const context = await this.pricingContext.load();
-        const receipt = this.resolveReceipts(this.receiptLines(dto), context.rates, outstanding);
+        const receipt = this.resolveReceipts(receiptInputs, context.rates, outstanding);
         const applied = receipt.totalLak.minus(receipt.changeLak);
         const remaining = outstanding.minus(applied);
         const day = await this.businessDay.current();
+        const settled = remaining.lte(0);
+        const nextOutstanding = settled ? (0, domain_1.dec)(0) : remaining;
+        const nextPaidAmount = (0, domain_1.dec)(credit.paidAmount.toFixed()).plus(applied);
         return this.prisma.$transaction(async (tx) => {
+            const claim = await tx.goldCredit.updateMany({
+                where: {
+                    id,
+                    status: credit.status,
+                    outstanding: credit.outstanding,
+                    deletedAt: null,
+                },
+                data: {
+                    outstanding: D(nextOutstanding),
+                    paidAmount: D(nextPaidAmount),
+                    ...(settled ? { status: 'COMPLETED', settledAt: new Date() } : {}),
+                },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ຍອດຄ້າງຮັບມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
             // One row and one cash/bank movement per leg, so Module Cash and
             // Module Bank each show what actually arrived in them.
             for (const line of receipt.lines) {
@@ -286,6 +586,7 @@ let CreditService = class CreditService {
                 await this.recordReceiptMoney(tx, {
                     receipt: created,
                     businessDayId: day.id,
+                    shiftId: openShiftId ?? null,
                     note: `ຮັບຄ່າງວດສິນເຊື່ອ ${credit.code}`,
                     refId: credit.id,
                     createdById: user.id,
@@ -299,13 +600,9 @@ let CreditService = class CreditService {
                 note: `ຮັບຄ່າງວດ ${credit.code}`,
                 createdById: user.id,
             });
-            const settled = remaining.lte(0);
-            const updated = await tx.goldCredit.update({
+            const updated = await tx.goldCredit.findUniqueOrThrow({
                 where: { id },
-                data: {
-                    outstanding: D(settled ? (0, domain_1.dec)(0) : remaining),
-                    ...(settled ? { status: 'COMPLETED', settledAt: new Date() } : {}),
-                },
+                include: this.detailInclude,
             });
             await this.audit.record({
                 actorId: user.id,
@@ -321,15 +618,25 @@ let CreditService = class CreditService {
     }
     async list(status, query, user) {
         const range = this.range.resolve(query, user);
+        const timeWin = this.range.resolveTimeWindow(range, query);
+        const q = query.search?.trim();
         const where = {
             deletedAt: null,
-            createdAt: history_range_service_1.HistoryRangeService.window(range),
+            createdAt: timeWin ?? history_range_service_1.HistoryRangeService.window(range),
             ...(status ? { status } : {}),
+            ...(q
+                ? {
+                    OR: [
+                        { code: { contains: q, mode: 'insensitive' } },
+                        { customer: { phone: { contains: q, mode: 'insensitive' } } },
+                    ],
+                }
+                : {}),
         };
         const [rows, total] = await this.prisma.$transaction([
             this.prisma.goldCredit.findMany({
                 where,
-                include: { customer: true, goldItem: true, receipts: true },
+                include: this.detailInclude,
                 orderBy: { createdAt: 'desc' },
                 skip: range.skip,
                 take: range.take,
@@ -339,12 +646,24 @@ let CreditService = class CreditService {
         // TOR History tables carry UPDATED BY.
         return this.range.page(await this.audit.withActorNames(rows), total, range);
     }
+    async getOne(id, _user) {
+        const row = await this.prisma.goldCredit.findFirst({
+            where: { id, deletedAt: null },
+            include: this.detailInclude,
+        });
+        if (!row)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
+        const [withActors] = await this.audit.withActorNames([row]);
+        const audits = await this.audit.forEntity('GoldCredit', id);
+        return { ...withActors, audits };
+    }
     /** Money in, to cash or bank depending on how it was taken. */
     async recordReceiptMoney(tx, input) {
         if (input.receipt.method === 'CASH') {
             await tx.cashTransaction.create({
                 data: {
                     businessDayId: input.businessDayId,
+                    ...(input.shiftId ? { shiftId: input.shiftId } : {}),
                     type: 'IN',
                     currency: input.receipt.currency,
                     amount: input.receipt.amount,
@@ -371,11 +690,32 @@ let CreditService = class CreditService {
             });
         }
     }
+    /** Atomic, sequential code in Vientiane local business date: CR-YYMMDD-NNN. */
     async nextCode(tx) {
-        const now = new Date();
-        const prefix = `CR-${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-        const count = await tx.goldCredit.count({ where: { code: { startsWith: prefix } } });
-        return `${prefix}-${String(count + 1).padStart(3, '0')}`;
+        const today = business_day_service_1.BusinessDayService.toDateOnly();
+        const yymmdd = String(today.getUTCFullYear()).slice(2) +
+            String(today.getUTCMonth() + 1).padStart(2, '0') +
+            String(today.getUTCDate()).padStart(2, '0');
+        const prefix = `CR-${yymmdd}`;
+        const scope = `CREDIT_${yymmdd}`;
+        for (let attempt = 0; attempt < 50; attempt++) {
+            const rows = await tx.$queryRaw `
+        INSERT INTO code_sequences (scope, next, "updatedAt")
+        VALUES (${scope}, 2, NOW())
+        ON CONFLICT (scope)
+        DO UPDATE SET next = code_sequences.next + 1, "updatedAt" = NOW()
+        RETURNING code_sequences.next - 1 AS next
+      `;
+            const seq = rows[0]?.next;
+            if (seq === undefined) {
+                throw new common_1.InternalServerErrorException('ອອກລະຫັດອັດຕະໂນມັດບໍ່ສຳເລັດ');
+            }
+            const code = `${prefix}-${String(seq).padStart(3, '0')}`;
+            const taken = await tx.goldCredit.findUnique({ where: { code }, select: { id: true } });
+            if (!taken)
+                return code;
+        }
+        throw new common_1.InternalServerErrorException('ອອກລະຫັດສິນເຊື່ອບໍ່ສຳເລັດ');
     }
 };
 exports.CreditService = CreditService;

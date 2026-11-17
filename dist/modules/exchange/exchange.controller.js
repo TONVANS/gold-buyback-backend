@@ -29,6 +29,9 @@ let ExchangeController = class ExchangeController {
     list(query, user) {
         return this.exchange.list(query.status, query, user);
     }
+    getOne(id, user) {
+        return this.exchange.getOne(id, user);
+    }
     /**
      * Live totals plus the §5.2 balance check — the form calls this on every
      * change so the Save button reflects the same rule the API enforces.
@@ -42,8 +45,21 @@ let ExchangeController = class ExchangeController {
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນສ້າງລາຍການ');
         return this.exchange.create(dto, user, shiftId);
     }
+    update(id, dto, user) {
+        return this.exchange.update(id, dto, user);
+    }
     review(id, dto, user) {
         return this.exchange.review(id, dto, user);
+    }
+    cancel(id, dto, user) {
+        return this.exchange.cancel(id, dto, user);
+    }
+    addPayment(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.exchange.addPayment(id, dto, user, shiftId);
+    }
+    remove(id, user) {
+        return this.exchange.remove(id, user);
     }
 };
 exports.ExchangeController = ExchangeController;
@@ -56,6 +72,15 @@ __decorate([
     __metadata("design:paramtypes", [exchange_dto_1.ListExchangeDto, Object]),
     __metadata("design:returntype", void 0)
 ], ExchangeController.prototype, "list", null);
+__decorate([
+    (0, common_1.Get)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], ExchangeController.prototype, "getOne", null);
 __decorate([
     openapi.ApiOperation({ summary: "Live totals plus the \u00A75.2 balance check \u2014 the form calls this on every\nchange so the Save button reflects the same rule the API enforces." }),
     (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
@@ -79,6 +104,17 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], ExchangeController.prototype, "create", null);
 __decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Patch)(':id'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, exchange_dto_1.UpdateExchangeDto, Object]),
+    __metadata("design:returntype", void 0)
+], ExchangeController.prototype, "update", null);
+__decorate([
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)(':id/review'),
     openapi.ApiResponse({ status: 201 }),
@@ -89,6 +125,40 @@ __decorate([
     __metadata("design:paramtypes", [String, exchange_dto_1.ReviewExchangeDto, Object]),
     __metadata("design:returntype", void 0)
 ], ExchangeController.prototype, "review", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Post)(':id/cancel'),
+    openapi.ApiResponse({ status: 201 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, exchange_dto_1.CancelExchangeDto, Object]),
+    __metadata("design:returntype", void 0)
+], ExchangeController.prototype, "cancel", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
+    (0, common_1.Post)(':id/payments'),
+    openapi.ApiResponse({ status: 201, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, exchange_dto_1.SettleExchangePaymentDto, Object, Object]),
+    __metadata("design:returntype", void 0)
+], ExchangeController.prototype, "addPayment", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Delete)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], ExchangeController.prototype, "remove", null);
 exports.ExchangeController = ExchangeController = __decorate([
     (0, swagger_1.ApiTags)('exchange'),
     (0, swagger_1.ApiBearerAuth)('bearer'),

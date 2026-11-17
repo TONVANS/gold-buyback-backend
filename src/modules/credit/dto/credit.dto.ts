@@ -11,7 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { HistoryRangeDto } from '../../../common/dto/history-range.dto';
+import { TimeSearchHistoryRangeDto } from '../../../common/dto/history-range.dto';
 import { IsDecimalString } from '../../../common/dto/decimal-string.validator';
 
 export class CreditReceiptDto {
@@ -37,11 +37,11 @@ export class ReceiptLinesDto {
 /**
  * ຕົວກອງຂອງລາຍການປະຫວັດ.
  *
- * ຕ້ອງສືບທອດ `HistoryRangeDto` ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
+ * ຕ້ອງສືບທອດ `TimeSearchHistoryRangeDto` ເພາະ ValidationPipe ຕັ້ງ `forbidNonWhitelisted`:
  * query ໃດທີ່ບໍ່ມີໃນ DTO ຈະຖືກປະຕິເສດ 400 ເຖິງແມ່ນ handler ຈະອ່ານມັນດ້ວຍ
  * `@Query('...')` ກໍຕາມ.
  */
-export class ListCreditDto extends HistoryRangeDto {
+export class ListCreditDto extends TimeSearchHistoryRangeDto {
   @IsOptional()
   @IsIn(['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'])
   status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
@@ -54,11 +54,10 @@ export class CreateCreditDto {
   @IsString() goldItemId: string;
   @IsOptional() @IsString() cabinetId?: string;
   @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG: string;
-  @IsInt() @Min(1) quantity: number;
+  @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity: number;
   @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice: string;
   @IsDecimalString({ labelLo: 'ເງິນວາງດາວ' }) downPayment: string;
 
-  @ValidateNested()
   /** Superseded by `receipts`; accepted so an older client still works. */
   @IsOptional()
   @ValidateNested()
@@ -70,6 +69,30 @@ export class CreateCreditDto {
   @ValidateNested({ each: true })
   @Type(() => CreditReceiptDto)
   receipts?: CreditReceiptDto[];
+}
+
+export class UpdateCreditDto {
+  @IsOptional()
+  @Matches(/^\d{8}$/, { message: 'ເບີໂທຕ້ອງເປັນຕົວເລກ 8 ໂຕ' })
+  phone?: string;
+
+  @IsOptional() @IsString() goldItemId?: string;
+  @IsOptional() @IsString() cabinetId?: string;
+  @IsOptional() @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG?: string;
+  @IsOptional() @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity?: number;
+  @IsOptional() @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice?: string;
+  @IsOptional() @IsDecimalString({ labelLo: 'ເງິນວາງດາວ' }) downPayment?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreditReceiptDto)
+  receipts?: CreditReceiptDto[];
+}
+
+export class CancelCreditDto {
+  @IsOptional() @IsString() @MaxLength(300, { message: 'ເຫດຜົນຍາວເກີນ 300 ຕົວ' })
+  reason?: string;
 }
 
 export class ReviewCreditDto {

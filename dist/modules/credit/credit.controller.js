@@ -31,18 +31,31 @@ let CreditController = class CreditController {
     list(query, user) {
         return this.credit.list(query.status, query, user);
     }
+    getOne(id, user) {
+        return this.credit.getOne(id, user);
+    }
     create(dto, user, req) {
         const shiftId = req.shift?.id;
         if (!shiftId)
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນສ້າງລາຍການສິນເຊື່ອ');
         return this.credit.create(dto, user, shiftId);
     }
+    update(id, dto, user) {
+        return this.credit.update(id, dto, user);
+    }
     review(id, dto, user) {
         return this.credit.review(id, dto, user);
     }
+    cancel(id, dto, user) {
+        return this.credit.cancel(id, dto, user);
+    }
     /** ຮັບຄ່າງວດ — draws down the outstanding AR (Cash). */
-    addReceipt(id, dto, user) {
-        return this.credit.addReceipt(id, dto, user);
+    addReceipt(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.credit.addReceipt(id, dto, user, shiftId);
+    }
+    remove(id, user) {
+        return this.credit.remove(id, user);
     }
 };
 exports.CreditController = CreditController;
@@ -56,6 +69,15 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], CreditController.prototype, "list", null);
 __decorate([
+    (0, common_1.Get)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CreditController.prototype, "getOne", null);
+__decorate([
     (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
     (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(),
@@ -68,6 +90,17 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], CreditController.prototype, "create", null);
 __decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Patch)(':id'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, credit_dto_1.UpdateCreditDto, Object]),
+    __metadata("design:returntype", void 0)
+], CreditController.prototype, "update", null);
+__decorate([
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)(':id/review'),
     openapi.ApiResponse({ status: 201 }),
@@ -79,17 +112,40 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], CreditController.prototype, "review", null);
 __decorate([
-    openapi.ApiOperation({ summary: "\u0EAE\u0EB1\u0E9A\u0E84\u0EC8\u0EB2\u0E87\u0EA7\u0E94 \u2014 draws down the outstanding AR (Cash)." }),
-    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
-    (0, common_1.Post)(':id/receipts'),
+    (0, roles_decorator_1.Roles)('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Post)(':id/cancel'),
     openapi.ApiResponse({ status: 201 }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, credit_dto_1.ReceiveCreditDto, Object]),
+    __metadata("design:paramtypes", [String, credit_dto_1.CancelCreditDto, Object]),
+    __metadata("design:returntype", void 0)
+], CreditController.prototype, "cancel", null);
+__decorate([
+    openapi.ApiOperation({ summary: "\u0EAE\u0EB1\u0E9A\u0E84\u0EC8\u0EB2\u0E87\u0EA7\u0E94 \u2014 draws down the outstanding AR (Cash)." }),
+    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
+    (0, common_1.Post)(':id/receipts'),
+    openapi.ApiResponse({ status: 201, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, credit_dto_1.ReceiveCreditDto, Object, Object]),
     __metadata("design:returntype", void 0)
 ], CreditController.prototype, "addReceipt", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Delete)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CreditController.prototype, "remove", null);
 exports.CreditController = CreditController = __decorate([
     (0, swagger_1.ApiTags)('credit'),
     (0, swagger_1.ApiBearerAuth)('bearer'),

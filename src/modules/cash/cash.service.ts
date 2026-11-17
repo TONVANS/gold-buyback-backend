@@ -526,7 +526,10 @@ export class CashService {
           isDrawerInflow = row.type === 'OUT';
         } else if (row.refType === 'GoldCredit') {
           isDrawerInflow = true;
-        } else if (['Buyback', 'GoldExchange', 'ShiftClose'].includes(row.refType ?? '')) {
+        } else if (['Buyback', 'GoldExchange'].includes(row.refType ?? '')) {
+          // Payouts are 'OUT' (outflow from drawer); change returned or incoming fees are 'IN' (inflow).
+          isDrawerInflow = row.type === 'IN';
+        } else if (row.refType === 'ShiftClose') {
           isDrawerInflow = false;
         } else {
           isDrawerInflow = CASH_SIGN[row.type] === 1;

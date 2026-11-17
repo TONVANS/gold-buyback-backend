@@ -844,19 +844,49 @@ export class BuybackService {
     const timeWin = this.range.resolveTimeWindow(range, query);
     const q = query.search?.trim();
 
+    /*
+     * ລາຍການ Buyback ທີ່ຍັງຄ້າງດຳເນີນການ (PENDING / APPROVED / ຫຼື COMPLETED ທີ່ຍັງມີຍອດຄ້າງຈ່າຍ)
+     * ຕ້ອງປາກົດຢູ່ໜ້າປະຫວັດຈົນກວ່າຈະສຳເລັດຄົບຖ້ວນ (Success), ເພື່ອບໍ່ໃຫ້ລາຍການຄ້າງຂ້າມມື້
+     * ຫາຍໄປຈາກໜ້າຈໍເມື່ອຂຶ້ນມື້ໃໝ່ — ເຊັ່ນດຽວກັບ Module Order ແລະ ຝາກສິນຄ້າ.
+     * ເມື່ອມີຕົວກອງຊ່ວງເວລາ (start_time / end_time), ກອງຕາມຊ່ວງ timestamp ທີ່ຂໍໂດຍກົງ.
+     */
+    const inRange = { createdAt: timeWin ?? HistoryRangeService.window(range) };
+    const zero = D(dec(0));
+    const stillOpen: Prisma.BuybackWhereInput = {
+      status: { notIn: ['REJECTED', 'CANCELLED'] },
+      OR: [{ status: { not: 'COMPLETED' } }, { outstandingAmount: { gt: zero } }],
+    };
+
+    const dateOrStatusWhere: Prisma.BuybackWhereInput = timeWin
+      ? {
+          ...inRange,
+          ...(status ? { status } : {}),
+        }
+      : status
+        ? {
+            status,
+            ...(status === 'REJECTED' || status === 'CANCELLED'
+              ? inRange
+              : status === 'COMPLETED'
+                ? { OR: [inRange, { outstandingAmount: { gt: zero } }] }
+                : {}),
+          }
+        : { OR: [inRange, stillOpen] };
+
+    const andClauses: Prisma.BuybackWhereInput[] = [dateOrStatusWhere];
+    if (query.source) andClauses.push({ source: query.source });
+    if (q) {
+      andClauses.push({
+        OR: [
+          { code: { contains: q, mode: 'insensitive' } },
+          { customer: { phone: { contains: q, mode: 'insensitive' } } },
+        ],
+      });
+    }
+
     const where: Prisma.BuybackWhereInput = {
       deletedAt: null,
-      createdAt: timeWin ?? HistoryRangeService.window(range),
-      ...(status ? { status } : {}),
-      ...(query.source ? { source: query.source } : {}),
-      ...(q
-        ? {
-            OR: [
-              { code: { contains: q, mode: 'insensitive' } },
-              { customer: { phone: { contains: q, mode: 'insensitive' } } },
-            ],
-          }
-        : {}),
+      AND: andClauses,
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.buyback.findMany({
