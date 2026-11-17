@@ -11,7 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { HistoryRangeDto } from '../../../common/dto/history-range.dto';
+import { TimeSearchHistoryRangeDto } from '../../../common/dto/history-range.dto';
 import { IsDecimalString } from '../../../common/dto/decimal-string.validator';
 
 export class BuybackPaymentLineDto {
@@ -95,10 +95,14 @@ export class CreateBuybackDto {
  * query ໃດທີ່ບໍ່ມີໃນ DTO ຈະຖືກປະຕິເສດ 400 ເຖິງແມ່ນ handler ຈະອ່ານມັນດ້ວຍ
  * `@Query('...')` ກໍຕາມ.
  */
-export class ListBuybackDto extends HistoryRangeDto {
+export class ListBuybackDto extends TimeSearchHistoryRangeDto {
   @IsOptional()
-  @IsIn(['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'])
-  status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
+  @IsIn(['DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'])
+  status?: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
+
+  @IsOptional()
+  @IsIn(['KPV', 'OTHER_SHOP'])
+  source?: 'KPV' | 'OTHER_SHOP';
 }
 
 export class PreviewBuybackDto {
@@ -118,7 +122,46 @@ export class PreviewBuybackDto {
   @IsOptional() @IsDecimalString({ labelLo: 'ຄ່າອ່ອນ / ຄ່າຫັກ' }) deduction?: string;
 }
 
+export class UpdateBuybackDto {
+  @IsOptional()
+  @Matches(/^\d{8}$/, { message: 'ເບີໂທຕ້ອງເປັນຕົວເລກ 8 ໂຕ' })
+  phone?: string;
+
+  @IsOptional()
+  @IsIn(['KPV', 'OTHER_SHOP'])
+  source?: 'KPV' | 'OTHER_SHOP';
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງມີລາຍການຄຳຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @ValidateNested({ each: true })
+  @Type(() => BuybackLineDto)
+  lines?: BuybackLineDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງມີລາຍການຈ່າຍເງິນຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @ValidateNested({ each: true })
+  @Type(() => BuybackPaymentLineDto)
+  payments?: BuybackPaymentLineDto[];
+}
+
 export class ReviewBuybackDto {
   @IsIn(['APPROVED', 'REJECTED']) decision: 'APPROVED' | 'REJECTED';
   @IsOptional() @IsString() @MaxLength(300, { message: 'ເຫດຜົນຍາວເກີນ 300 ຕົວ' }) reason?: string;
+}
+
+export class CancelBuybackDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300, { message: 'ເຫດຜົນຍາວເກີນ 300 ຕົວ' })
+  reason?: string;
+}
+
+export class SettleBuybackPaymentDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງມີລາຍການຈ່າຍເງິນຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @ValidateNested({ each: true })
+  @Type(() => BuybackPaymentLineDto)
+  payments: BuybackPaymentLineDto[];
 }

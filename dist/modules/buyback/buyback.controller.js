@@ -31,6 +31,9 @@ let BuybackController = class BuybackController {
     list(query, user) {
         return this.buyback.list(query.status, query, user);
     }
+    getOne(id, user) {
+        return this.buyback.getOne(id, user);
+    }
     /** Live §5.1 calculation for the Valuer's form. */
     preview(dto) {
         return this.buyback.preview(dto);
@@ -43,13 +46,29 @@ let BuybackController = class BuybackController {
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນສ້າງລາຍການ Buyback');
         return this.buyback.create(dto, user, shiftId);
     }
+    update(id, dto, user) {
+        return this.buyback.update(id, dto, user);
+    }
     /** payment ກົດ Approve / Reject (TOR §4.2). */
     review(id, dto, user) {
         return this.buyback.review(id, dto, user);
     }
     /** ຜູ້ປະເມີນ ກົດຢືນຢັນອີກຄັ້ງ -> Completed. */
-    confirm(id, user) {
-        return this.buyback.confirm(id, user);
+    confirm(id, user, req) {
+        const shiftId = req.shift?.id;
+        return this.buyback.confirm(id, user, shiftId);
+    }
+    /** ຍົກເລີກລາຍການທີ່ຍັງບໍ່ທັນ COMPLETED. */
+    cancel(id, dto, user) {
+        return this.buyback.cancel(id, dto, user);
+    }
+    /** ຊຳລະຍອດຄ້າງຈ່າຍເພີ່ມເຕີມ (ຖ້າມີ). */
+    addPayment(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.buyback.addPayment(id, dto, user, shiftId);
+    }
+    remove(id, user) {
+        return this.buyback.remove(id, user);
     }
 };
 exports.BuybackController = BuybackController;
@@ -62,6 +81,15 @@ __decorate([
     __metadata("design:paramtypes", [buyback_dto_1.ListBuybackDto, Object]),
     __metadata("design:returntype", void 0)
 ], BuybackController.prototype, "list", null);
+__decorate([
+    (0, common_1.Get)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], BuybackController.prototype, "getOne", null);
 __decorate([
     openapi.ApiOperation({ summary: "Live \u00A75.1 calculation for the Valuer's form." }),
     (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
@@ -85,6 +113,17 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], BuybackController.prototype, "create", null);
 __decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Patch)(':id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, buyback_dto_1.UpdateBuybackDto, Object]),
+    __metadata("design:returntype", void 0)
+], BuybackController.prototype, "update", null);
+__decorate([
     openapi.ApiOperation({ summary: "payment \u0E81\u0EBB\u0E94 Approve / Reject (TOR \u00A74.2)." }),
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)(':id/review'),
@@ -99,14 +138,52 @@ __decorate([
 __decorate([
     openapi.ApiOperation({ summary: "\u0E9C\u0EB9\u0EC9\u0E9B\u0EB0\u0EC0\u0EA1\u0EB5\u0E99 \u0E81\u0EBB\u0E94\u0EA2\u0EB7\u0E99\u0EA2\u0EB1\u0E99\u0EAD\u0EB5\u0E81\u0E84\u0EB1\u0EC9\u0E87 -> Completed." }),
     (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(':id/confirm'),
     openapi.ApiResponse({ status: 201 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __param(2, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", void 0)
+], BuybackController.prototype, "confirm", null);
+__decorate([
+    openapi.ApiOperation({ summary: "\u0E8D\u0EBB\u0E81\u0EC0\u0EA5\u0EB5\u0E81\u0EA5\u0EB2\u0E8D\u0E81\u0EB2\u0E99\u0E97\u0EB5\u0EC8\u0E8D\u0EB1\u0E87\u0E9A\u0ECD\u0EC8\u0E97\u0EB1\u0E99 COMPLETED." }),
+    (0, roles_decorator_1.Roles)('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Post)(':id/cancel'),
+    openapi.ApiResponse({ status: 201 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, buyback_dto_1.CancelBuybackDto, Object]),
+    __metadata("design:returntype", void 0)
+], BuybackController.prototype, "cancel", null);
+__decorate([
+    openapi.ApiOperation({ summary: "\u0E8A\u0EB3\u0EA5\u0EB0\u0E8D\u0EAD\u0E94\u0E84\u0EC9\u0EB2\u0E87\u0E88\u0EC8\u0EB2\u0E8D\u0EC0\u0E9E\u0EB5\u0EC8\u0EA1\u0EC0\u0E95\u0EB5\u0EA1 (\u0E96\u0EC9\u0EB2\u0EA1\u0EB5)." }),
+    (0, roles_decorator_1.Roles)('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
+    (0, common_1.Post)(':id/payments'),
+    openapi.ApiResponse({ status: 201, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, buyback_dto_1.SettleBuybackPaymentDto, Object, Object]),
+    __metadata("design:returntype", void 0)
+], BuybackController.prototype, "addPayment", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('VALUER', 'ADMIN', 'MANAGER'),
+    (0, common_1.Delete)(':id'),
+    openapi.ApiResponse({ status: 200 }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
-], BuybackController.prototype, "confirm", null);
+], BuybackController.prototype, "remove", null);
 exports.BuybackController = BuybackController = __decorate([
     (0, swagger_1.ApiTags)('buyback'),
     (0, swagger_1.ApiBearerAuth)('bearer'),

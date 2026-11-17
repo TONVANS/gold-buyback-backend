@@ -1,11 +1,14 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { ApprovalStatus } from '@prisma/client';
 import { BuybackService } from './buyback.service';
 import {
+  CancelBuybackDto,
   CreateBuybackDto,
   ListBuybackDto,
   PreviewBuybackDto,
   ReviewBuybackDto,
+  SettleBuybackPaymentDto,
+  UpdateBuybackDto,
 } from './dto/buyback.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RequiresOpenShift } from '../../common/decorators/requires-shift.decorator';
@@ -23,6 +26,11 @@ export class BuybackController {
   @Get()
   list(@Query() query: ListBuybackDto, @CurrentUser() user: AuthenticatedUser) {
     return this.buyback.list(query.status as ApprovalStatus | undefined, query, user);
+  }
+
+  @Get(':id')
+  getOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.buyback.getOne(id, user);
   }
 
   /** Live §5.1 calculation for the Valuer's form. */
@@ -43,6 +51,16 @@ export class BuybackController {
     return this.buyback.create(dto, user, shiftId);
   }
 
+  @Roles('VALUER', 'ADMIN', 'MANAGER')
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBuybackDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.buyback.update(id, dto, user);
+  }
+
   /** payment ກົດ Approve / Reject (TOR §4.2). */
   @Roles('PAYMENT', 'ADMIN', 'MANAGER')
   @Post(':id/review')
@@ -56,8 +74,41 @@ export class BuybackController {
 
   /** ຜູ້ປະເມີນ ກົດຢືນຢັນອີກຄັ້ງ -> Completed. */
   @Roles('VALUER', 'ADMIN', 'MANAGER')
+  @RequiresOpenShift()
   @Post(':id/confirm')
-  confirm(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.buyback.confirm(id, user);
+  confirm(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Req() req: any) {
+    const shiftId = req.shift?.id as string | undefined;
+    return this.buyback.confirm(id, user, shiftId);
+  }
+
+  /** ຍົກເລີກລາຍການທີ່ຍັງບໍ່ທັນ COMPLETED. */
+  @Roles('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER')
+  @Post(':id/cancel')
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelBuybackDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.buyback.cancel(id, dto, user);
+  }
+
+  /** ຊຳລະຍອດຄ້າງຈ່າຍເພີ່ມເຕີມ (ຖ້າມີ). */
+  @Roles('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER')
+  @RequiresOpenShift()
+  @Post(':id/payments')
+  addPayment(
+    @Param('id') id: string,
+    @Body() dto: SettleBuybackPaymentDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() req: any,
+  ) {
+    const shiftId = req.shift?.id as string | undefined;
+    return this.buyback.addPayment(id, dto, user, shiftId);
+  }
+
+  @Roles('VALUER', 'ADMIN', 'MANAGER')
+  @Delete(':id')
+  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.buyback.remove(id, user);
   }
 }

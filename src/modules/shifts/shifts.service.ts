@@ -253,7 +253,13 @@ export class ShiftsService {
     const [buybacks, handovers] = await Promise.all([
       tx.buyback.findMany({
         where: { shiftId, status: 'COMPLETED', deletedAt: null },
-        select: { goldTypeId: true, weightG: true, quantity: true, payableAmount: true },
+        select: {
+          code: true,
+          goldTypeId: true,
+          weightG: true,
+          payableAmount: true,
+          lines: { select: { goldTypeId: true, weightG: true, quantity: true, payableAmount: true } },
+        },
       }),
       tx.goldHandover.findMany({
         where: { shiftId, status: 'APPROVED', deletedAt: null },
@@ -261,15 +267,43 @@ export class ShiftsService {
       }),
     ]);
 
+    if (buybacks.length === 0) return;
+
+    // ບິນ Buyback ທີ່ຖືກຢືນຢັນຜ່ານ BuybackService.confirm() ຖືກລົງ Stock (OLD) ແລ້ວ
+    // ຕອນກົດຢືນຢັນ (`typeLabel = 'Buyback BB-...'`). ຈຶ່ງຂ້າມລາຍການເຫຼົ່ານັ້ນເພື່ອບໍ່ໃຫ້ລົງຊ້ຳ.
+    const alreadyPosted = await tx.stockOldLedger.findMany({
+      where: {
+        deletedAt: null,
+        typeLabel: { in: buybacks.map((b) => `Buyback ${b.code}`) },
+      },
+      select: { typeLabel: true },
+    });
+    const postedLabels = new Set(alreadyPosted.map((r) => r.typeLabel));
+
     const bought = new Map<string, { weight: Decimal; cost: Decimal }>();
     for (const row of buybacks) {
-      const weight = dec(row.weightG.toFixed()).mul(row.quantity);
-      const current = bought.get(row.goldTypeId) ?? { weight: dec(0), cost: dec(0) };
-      bought.set(row.goldTypeId, {
-        weight: current.weight.plus(weight),
-        cost: current.cost.plus(dec(row.payableAmount.toFixed())),
-      });
+      if (postedLabels.has(`Buyback ${row.code}`)) continue;
+
+      if (row.lines.length > 0) {
+        for (const line of row.lines) {
+          const weight = dec(line.weightG.toFixed()).mul(line.quantity);
+          const current = bought.get(line.goldTypeId) ?? { weight: dec(0), cost: dec(0) };
+          bought.set(line.goldTypeId, {
+            weight: current.weight.plus(weight),
+            cost: current.cost.plus(dec(line.payableAmount.toFixed())),
+          });
+        }
+      } else {
+        const weight = dec(row.weightG.toFixed());
+        const current = bought.get(row.goldTypeId) ?? { weight: dec(0), cost: dec(0) };
+        bought.set(row.goldTypeId, {
+          weight: current.weight.plus(weight),
+          cost: current.cost.plus(dec(row.payableAmount.toFixed())),
+        });
+      }
     }
+
+    if (bought.size === 0) return;
 
     for (const row of handovers) {
       const current = bought.get(row.goldTypeId);
