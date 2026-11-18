@@ -553,6 +553,7 @@ model GoldItem {
   movementLines StockMovementLine[]
   buybackLines BuybackLine[]
   orderLines   OrderLine[]
+  creditLines  CreditLine[]
 }
 
 /// TOR §3.7 — ລະບົບຈັດການ SKU ນ້ຳໜັກຂອງຄຳ.
@@ -596,6 +597,7 @@ model Cabinet {
 
   exchangeNewLines ExchangeNewLine[]
   credits          GoldCredit[]
+  creditLines      CreditLine[]
   movements        StockMovement[]
 
   /// ຊື່ຊ້ຳກັນບໍ່ໄດ້: ດັດສະນີ SQL ດິບ `cabinets_name_lo_active_key` ຢູ່ migration
@@ -1141,11 +1143,32 @@ model GoldCredit {
   customer Customer @relation(fields: [customerId], references: [id])
   goldItem GoldItem @relation(fields: [goldItemId], references: [id])
   cabinet  Cabinet? @relation(fields: [cabinetId], references: [id])
+  lines    CreditLine[]
   receipts CreditReceipt[]
 
   @@index([status, createdAt])
   @@index([createdAt])
   @@map("gold_credits")
+}
+
+/// ລາຍການຄຳໃນ 1 ບິນສິນເຊື່ອ — ບິນດຽວຂາຍໄດ້ຫຼາຍລາຍການຄຳ.
+model CreditLine {
+  id         String  @id @default(cuid())
+  creditId   String
+  goldItemId String
+  cabinetId  String?
+  weightG    Decimal @db.Decimal(18, 4)
+  quantity   Int
+  /// ລາຄາຂາຍຂອງແຖວນີ້ (LAK).
+  sellPrice  Decimal @db.Decimal(18, 4)
+  sortOrder  Int     @default(0)
+
+  credit   GoldCredit @relation(fields: [creditId], references: [id], onDelete: Cascade)
+  goldItem GoldItem   @relation(fields: [goldItemId], references: [id])
+  cabinet  Cabinet?   @relation(fields: [cabinetId], references: [id])
+
+  @@index([creditId])
+  @@map("credit_lines")
 }
 
 /// ເງິນວາງດາວ and later instalments. Change limits from §5.3:

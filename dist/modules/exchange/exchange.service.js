@@ -515,7 +515,7 @@ let ExchangeService = class ExchangeService {
         });
     }
     /** payment ກົດ Approve / Reject. */
-    async review(id, dto, user) {
+    async review(id, dto, user, openShiftId) {
         const exchange = await this.prisma.goldExchange.findFirst({
             where: { id, deletedAt: null },
             include: { oldLines: true, newLines: true, payments: true },
@@ -525,11 +525,11 @@ let ExchangeService = class ExchangeService {
         const next = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
         this.approval.assertTransition(exchange.status, next);
         const isIncoming = (0, domain_1.dec)(exchange.totalPayable.toFixed()).lt(0);
-        if (dto.decision === 'APPROVED') {
-            await this.assertFundsForPosting(exchange.payments, isIncoming, `ການຈ່າຍປ່ຽນເປັນເງິນ ${exchange.code}`);
-        }
         const day = await this.businessDay.current();
         return this.prisma.$transaction(async (tx) => {
+            if (dto.decision === 'APPROVED') {
+                await this.assertFundsForPosting(exchange.payments, isIncoming, `ການຈ່າຍປ່ຽນເປັນເງິນ ${exchange.code}`, openShiftId, tx);
+            }
             const claim = await tx.goldExchange.updateMany({
                 where: { id, status: exchange.status, deletedAt: null },
                 data: {
@@ -545,7 +545,7 @@ let ExchangeService = class ExchangeService {
             if (dto.decision === 'APPROVED') {
                 await this.postCashAndBank(tx, {
                     businessDayId: day.id,
-                    shiftId: exchange.shiftId,
+                    shiftId: openShiftId ?? exchange.shiftId,
                     exchangeId: exchange.id,
                     code: exchange.code,
                     isIncoming,
@@ -670,13 +670,13 @@ let ExchangeService = class ExchangeService {
         await this.assertBankLegs(dto.payments);
         const context = await this.pricingContext.load();
         const resolved = this.resolvePayments(dto.payments, signedOutstanding, context.rates);
-        await this.assertFundsForPosting(resolved.lines, isIncoming, `ການຊຳລະຄ້າງປ່ຽນເປັນເງິນ ${exchange.code}`);
         const effectiveShiftId = openShiftId ?? (exchange.shift.status === 'OPEN' ? exchange.shiftId : undefined);
         if (!effectiveShiftId) {
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນບັນທຶກການຈ່າຍເງິນ');
         }
         const day = await this.businessDay.current();
         return this.prisma.$transaction(async (tx) => {
+            await this.assertFundsForPosting(resolved.lines, isIncoming, `ການຊຳລະຄ້າງປ່ຽນເປັນເງິນ ${exchange.code}`, effectiveShiftId, tx);
             const nextPaid = (0, domain_1.dec)(exchange.paidAmount.toFixed()).plus(resolved.appliedLak);
             const nextOutstanding = outstanding.minus(resolved.appliedLak);
             const claim = await tx.goldExchange.updateMany({
@@ -889,9 +889,9 @@ let ExchangeService = class ExchangeService {
             createdById: actorId,
         }));
     }
-    async assertFundsForPosting(payments, isIncoming, labelLo) {
+    async assertFundsForPosting(payments, isIncoming, labelLo, shiftId, client) {
         if (!isIncoming) {
-            await this.cash.assertSufficientFunds(payments, labelLo);
+            await this.cash.assertShiftWalletAndBankFunds(shiftId, payments, labelLo, { client });
             return;
         }
         const changeTotal = payments.reduce((sum, p) => {
@@ -901,7 +901,7 @@ let ExchangeService = class ExchangeService {
             return sum.plus((0, domain_1.dec)(raw));
         }, (0, domain_1.dec)(0));
         if (changeTotal.gt(0)) {
-            await this.cash.assertSufficientFunds([{ method: 'CASH', currency: 'LAK', amount: changeTotal }], `ເງິນທອນ ${labelLo}`);
+            await this.cash.assertShiftWalletAndBankFunds(shiftId, [{ method: 'CASH', currency: 'LAK', amount: changeTotal }], `ເງິນທອນ ${labelLo}`, { client });
         }
     }
     async postCashAndBank(tx, input) {

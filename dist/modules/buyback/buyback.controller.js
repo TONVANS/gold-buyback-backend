@@ -50,8 +50,9 @@ let BuybackController = class BuybackController {
         return this.buyback.update(id, dto, user);
     }
     /** payment ກົດ Approve / Reject (TOR §4.2). */
-    review(id, dto, user) {
-        return this.buyback.review(id, dto, user);
+    review(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.buyback.review(id, dto, user, shiftId);
     }
     /** ຜູ້ປະເມີນ ກົດຢືນຢັນອີກຄັ້ງ -> Completed. */
     confirm(id, user, req) {
@@ -126,13 +127,15 @@ __decorate([
 __decorate([
     openapi.ApiOperation({ summary: "payment \u0E81\u0EBB\u0E94 Approve / Reject (TOR \u00A74.2)." }),
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(':id/review'),
     openapi.ApiResponse({ status: 201 }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, buyback_dto_1.ReviewBuybackDto, Object]),
+    __metadata("design:paramtypes", [String, buyback_dto_1.ReviewBuybackDto, Object, Object]),
     __metadata("design:returntype", void 0)
 ], BuybackController.prototype, "review", null);
 __decorate([

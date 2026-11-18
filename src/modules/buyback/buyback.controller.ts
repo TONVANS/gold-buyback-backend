@@ -63,13 +63,16 @@ export class BuybackController {
 
   /** payment ກົດ Approve / Reject (TOR §4.2). */
   @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @RequiresOpenShift()
   @Post(':id/review')
   review(
     @Param('id') id: string,
     @Body() dto: ReviewBuybackDto,
     @CurrentUser() user: AuthenticatedUser,
+    @Req() req: any,
   ) {
-    return this.buyback.review(id, dto, user);
+    const shiftId = req.shift?.id as string | undefined;
+    return this.buyback.review(id, dto, user, shiftId);
   }
 
   /** ຜູ້ປະເມີນ ກົດຢືນຢັນອີກຄັ້ງ -> Completed. */

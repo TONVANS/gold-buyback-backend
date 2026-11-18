@@ -72,13 +72,16 @@ export class ExchangeController {
   }
 
   @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @RequiresOpenShift()
   @Post(':id/review')
   review(
     @Param('id') id: string,
     @Body() dto: ReviewExchangeDto,
     @CurrentUser() user: AuthenticatedUser,
+    @Req() req: any,
   ) {
-    return this.exchange.review(id, dto, user);
+    const shiftId = req.shift?.id as string | undefined;
+    return this.exchange.review(id, dto, user, shiftId);
   }
 
   @Roles('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER')

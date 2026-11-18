@@ -63,13 +63,16 @@ export class CreditController {
   }
 
   @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @RequiresOpenShift()
   @Post(':id/review')
   review(
     @Param('id') id: string,
     @Body() dto: ReviewCreditDto,
     @CurrentUser() user: AuthenticatedUser,
+    @Req() req: any,
   ) {
-    return this.credit.review(id, dto, user);
+    const shiftId = req.shift?.id as string | undefined;
+    return this.credit.review(id, dto, user, shiftId);
   }
 
   @Roles('VALUER', 'PAYMENT', 'ADMIN', 'MANAGER')

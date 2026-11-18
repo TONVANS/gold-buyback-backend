@@ -386,7 +386,7 @@ let BuybackService = class BuybackService {
         return { ...updated, branch: summary.branch };
     }
     /** payment ກົດ Approve / Reject (TOR §4.2). */
-    async review(id, dto, user) {
+    async review(id, dto, user, openShiftId) {
         const buyback = await this.prisma.buyback.findFirst({
             where: { id, deletedAt: null },
             include: { payments: true },
@@ -395,10 +395,10 @@ let BuybackService = class BuybackService {
             throw new common_1.NotFoundException('ບໍ່ພົບລາຍການ Buyback');
         const next = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
         this.approval.assertTransition(buyback.status, next);
-        if (dto.decision === 'APPROVED') {
-            await this.cash.assertSufficientFunds(buyback.payments, `ການຈ່າຍ Buyback ${buyback.code}`);
-        }
         return this.prisma.$transaction(async (tx) => {
+            if (dto.decision === 'APPROVED') {
+                await this.cash.assertShiftWalletAndBankFunds(openShiftId, buyback.payments, `ການຈ່າຍ Buyback ${buyback.code}`, { excludeBuybackId: buyback.id, client: tx });
+            }
             const claim = await tx.buyback.updateMany({
                 where: { id, status: buyback.status, deletedAt: null },
                 data: {
@@ -458,9 +458,21 @@ let BuybackService = class BuybackService {
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນຢືນຢັນ Buyback');
         }
         this.approval.assertTransition(buyback.status, 'COMPLETED');
-        await this.cash.assertSufficientFunds(buyback.payments, `ການຈ່າຍ Buyback ${buyback.code}`);
         const day = await this.businessDay.current();
+        const hasCashLeg = buyback.payments.some((p) => p.method === 'CASH');
         return this.prisma.$transaction(async (tx) => {
+            const approverShift = buyback.approvedById
+                ? await tx.shift.findFirst({
+                    where: { userId: buyback.approvedById, status: 'OPEN' },
+                    orderBy: { openedAt: 'desc' },
+                    select: { id: true },
+                })
+                : null;
+            if (hasCashLeg && !approverShift) {
+                throw new common_1.BadRequestException('ກະຂອງຜູ້ອະນຸມັດ (Payment) ຍັງບໍ່ໄດ້ເປີດ ຫຼື ປິດກະແລ້ວ — ບໍ່ສາມາດຕັດເງິນສົດຈາກກະເປົ໋າເງິນສົດ (To Day) ໄດ້');
+            }
+            const cashShiftId = approverShift?.id;
+            await this.cash.assertShiftWalletAndBankFunds(cashShiftId, buyback.payments, `ການຈ່າຍ Buyback ${buyback.code}`, { excludeBuybackId: buyback.id, client: tx });
             const claim = await tx.buyback.updateMany({
                 where: { id, status: 'APPROVED', deletedAt: null },
                 data: { status: 'COMPLETED', confirmedAt: new Date() },
@@ -468,10 +480,10 @@ let BuybackService = class BuybackService {
             if (claim.count !== 1) {
                 throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
             }
-            // 1. Money leaves the shop, split across the recorded payment legs.
+            // 1. Money leaves Payment's cash wallet (CASH) / Module Bank (BANK).
             await this.postCashAndBankOut(tx, {
                 businessDayId: day.id,
-                shiftId: effectiveShiftId,
+                shiftId: cashShiftId ?? effectiveShiftId,
                 buybackId: buyback.id,
                 code: buyback.code,
                 payments: buyback.payments,
@@ -585,20 +597,20 @@ let BuybackService = class BuybackService {
         await this.assertBankLegs(dto.payments);
         const context = await this.pricingContext.load();
         const resolved = this.resolvePayments(dto.payments, outstanding, context.rates);
-        if (buyback.status === 'COMPLETED') {
-            await this.cash.assertSufficientFunds(resolved.lines.map((l) => ({
-                method: l.method,
-                bankAccountId: l.bankAccountId ?? null,
-                currency: l.currency,
-                amount: l.amount,
-            })), `ການຈ່າຍຄ້າງ Buyback ${buyback.code}`);
-        }
         const effectiveShiftId = openShiftId ?? (buyback.shift.status === 'OPEN' ? buyback.shiftId : undefined);
         if (buyback.status === 'COMPLETED' && !effectiveShiftId) {
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນບັນທຶກການຈ່າຍເງິນ');
         }
         const day = buyback.status === 'COMPLETED' ? await this.businessDay.current() : null;
         return this.prisma.$transaction(async (tx) => {
+            if (buyback.status === 'COMPLETED') {
+                await this.cash.assertShiftWalletAndBankFunds(effectiveShiftId, resolved.lines.map((l) => ({
+                    method: l.method,
+                    bankAccountId: l.bankAccountId ?? null,
+                    currency: l.currency,
+                    amount: l.amount,
+                })), `ການຈ່າຍຄ້າງ Buyback ${buyback.code}`, { client: tx });
+            }
             const appliedLak = resolved.totalLak.minus(resolved.changeLak);
             const nextPaid = (0, domain_1.dec)(buyback.paidAmount.toFixed()).plus(appliedLak);
             const nextOutstanding = (0, domain_1.dec)(buyback.payableAmount.toFixed()).minus(nextPaid);

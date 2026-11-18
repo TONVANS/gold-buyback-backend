@@ -382,7 +382,7 @@ let CreditService = class CreditService {
      * payment approves. On approval the down payment lands in cash/bank and the
      * outstanding balance is recognised as AR (Cash) — TOR §9.2.
      */
-    async review(id, dto, user) {
+    async review(id, dto, user, openShiftId) {
         const credit = await this.prisma.goldCredit.findFirst({
             where: { id, deletedAt: null },
             include: { receipts: true },
@@ -400,7 +400,7 @@ let CreditService = class CreditService {
                     await this.recordReceiptMoney(tx, {
                         receipt,
                         businessDayId: day.id,
-                        shiftId: credit.shiftId,
+                        shiftId: openShiftId ?? credit.shiftId,
                         note: `ເງິນວາງດາວສິນເຊື່ອ ${credit.code}`,
                         refId: credit.id,
                         createdById: user.id,

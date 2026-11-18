@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
@@ -47,15 +48,40 @@ export class ListCreditDto extends TimeSearchHistoryRangeDto {
   status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
 }
 
+export class CreditLineDto {
+  @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກລາຍການຄຳ' })
+  goldItemId: string;
+
+  @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກຕູ້ເຄື່ອງ' })
+  cabinetId: string;
+
+  @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' })
+  weightG: string;
+
+  @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' })
+  quantity: number;
+
+  @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' })
+  sellPrice: string;
+}
+
 export class CreateCreditDto {
   @Matches(/^\d{8}$/, { message: 'ເບີໂທຕ້ອງເປັນຕົວເລກ 8 ໂຕ' })
   phone: string;
 
-  @IsString() goldItemId: string;
-  @IsOptional() @IsString() cabinetId?: string;
-  @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG: string;
-  @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity: number;
-  @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice: string;
+  /** Multi-line items; when absent, legacy single-line fields below are used. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງມີລາຍການຄຳຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @ValidateNested({ each: true })
+  @Type(() => CreditLineDto)
+  lines?: CreditLineDto[];
+
+  @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກລາຍການຄຳ' }) goldItemId?: string;
+  @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກຕູ້ເຄື່ອງ' }) cabinetId?: string;
+  @IsOptional() @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG?: string;
+  @IsOptional() @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity?: number;
+  @IsOptional() @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice?: string;
   @IsDecimalString({ labelLo: 'ເງິນວາງດາວ' }) downPayment: string;
 
   /** Superseded by `receipts`; accepted so an older client still works. */
@@ -76,8 +102,15 @@ export class UpdateCreditDto {
   @Matches(/^\d{8}$/, { message: 'ເບີໂທຕ້ອງເປັນຕົວເລກ 8 ໂຕ' })
   phone?: string;
 
-  @IsOptional() @IsString() goldItemId?: string;
-  @IsOptional() @IsString() cabinetId?: string;
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງມີລາຍການຄຳຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @ValidateNested({ each: true })
+  @Type(() => CreditLineDto)
+  lines?: CreditLineDto[];
+
+  @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກລາຍການຄຳ' }) goldItemId?: string;
+  @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກຕູ້ເຄື່ອງ' }) cabinetId?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG?: string;
   @IsOptional() @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity?: number;
   @IsOptional() @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice?: string;

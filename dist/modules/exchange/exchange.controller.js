@@ -48,8 +48,9 @@ let ExchangeController = class ExchangeController {
     update(id, dto, user) {
         return this.exchange.update(id, dto, user);
     }
-    review(id, dto, user) {
-        return this.exchange.review(id, dto, user);
+    review(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.exchange.review(id, dto, user, shiftId);
     }
     cancel(id, dto, user) {
         return this.exchange.cancel(id, dto, user);
@@ -116,13 +117,15 @@ __decorate([
 ], ExchangeController.prototype, "update", null);
 __decorate([
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(':id/review'),
     openapi.ApiResponse({ status: 201 }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, exchange_dto_1.ReviewExchangeDto, Object]),
+    __metadata("design:paramtypes", [String, exchange_dto_1.ReviewExchangeDto, Object, Object]),
     __metadata("design:returntype", void 0)
 ], ExchangeController.prototype, "review", null);
 __decorate([

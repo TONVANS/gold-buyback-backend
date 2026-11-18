@@ -86,10 +86,10 @@ export class CashService {
       const currentWallet = await this.walletBalance(user.id);
       for (const line of lines) {
         const bal = currentWallet.balances.find((b) => b.currency === line.currency);
-        const currentBal = dec(bal?.balance ?? '0');
-        if (line.amount.gt(currentBal)) {
+        const availableBal = dec(bal?.available ?? bal?.balance ?? '0');
+        if (line.amount.gt(availableBal)) {
           throw new BadRequestException(
-            `ຍອດເງິນ ${line.currency} ໃນກະເປົ໋າບໍ່ພໍສຳລັບມອບເງິນ (ມີ ${currentBal.toFixed()}, ຕ້ອງການມອບ ${line.amount.toFixed()})`,
+            `ຍອດເງິນ ${line.currency} ທີ່ພ້ອມໃຊ້ໃນກະເປົ໋າບໍ່ພໍສຳລັບມອບເງິນ (ພ້ອມໃຊ້ ${availableBal.toFixed()}, ຕ້ອງການມອບ ${line.amount.toFixed()})`,
           );
         }
       }
@@ -267,6 +267,19 @@ export class CashService {
     const type = request.direction === 'WITHDRAW' ? 'OUT' : 'IN';
 
     return this.prisma.$transaction(async (tx) => {
+      if (request.direction === 'HANDOVER') {
+        await this.assertShiftWalletAndBankFunds(
+          request.shiftId,
+          request.lines.map((line) => ({
+            method: 'CASH',
+            currency: line.currency,
+            amount: line.amount,
+          })),
+          'ການມອບເງິນຄືນ',
+          { excludeCashRequestId: request.id, client: tx },
+        );
+      }
+
       for (const line of request.lines) {
         await tx.cashTransaction.create({
           data: {
@@ -325,6 +338,57 @@ export class CashService {
    * §3.7 — Module Cash
    * ---------------------------------------------------------------- */
 
+  private partitionRequestedLegs(
+    legs: Array<{
+      method: string;
+      bankAccountId?: string | null;
+      currency: Currency;
+      amount: Decimal | Prisma.Decimal | string | number;
+    }>,
+  ) {
+    const cashRequested = new Map<Currency, Decimal>();
+    const bankRequested = new Map<string, Decimal>();
+
+    for (const leg of legs) {
+      const raw =
+        typeof leg.amount === 'object' && leg.amount !== null && 'toFixed' in leg.amount
+          ? leg.amount.toFixed()
+          : leg.amount;
+      const amt = dec(raw);
+      if (!amt.isFinite() || amt.lte(0)) continue;
+
+      if (leg.method === 'CASH') {
+        cashRequested.set(leg.currency, (cashRequested.get(leg.currency) ?? dec(0)).plus(amt));
+      } else if (leg.method === 'BANK' && leg.bankAccountId) {
+        const key = `${leg.bankAccountId}:${leg.currency}`;
+        bankRequested.set(key, (bankRequested.get(key) ?? dec(0)).plus(amt));
+      }
+    }
+
+    return { cashRequested, bankRequested };
+  }
+
+  private assertBankRequested(
+    bankRequested: Map<string, Decimal>,
+    bankBalances: Awaited<ReturnType<CashService['bankBalances']>>,
+    labelLo: string,
+  ): void {
+    for (const [key, reqAmount] of bankRequested) {
+      const [bankAccountId, currency] = key.split(':') as [string, Currency];
+      const bal = bankBalances.find(
+        (b) => b.bankAccountId === bankAccountId && b.currency === currency,
+      );
+      const currentBal = dec(bal?.actual ?? '0');
+      const bankName = bal?.bankNameLo ?? 'ທະນາຄານ';
+      if (reqAmount.gt(currentBal)) {
+        const shortage = reqAmount.minus(currentBal);
+        throw new BadRequestException(
+          `ຍອດເງິນ ${currency} ໃນບັນຊີ ${bankName} (Module Bank) ບໍ່ພໍສຳລັບ${labelLo} (ມີ ${currentBal.toFixed()} ${currency}, ຕ້ອງການຈ່າຍ ${reqAmount.toFixed()} ${currency}, ຍັງຂາດ ${shortage.toFixed()} ${currency})`,
+        );
+      }
+    }
+  }
+
   /**
    * ກວດສອບວ່າຍອດເງິນສົດໃນຮ້ານ (Module Cash) ແລະ ຍອດເງິນໃນບັນຊີທະນາຄານ (Module Bank)
    * ພຽງພໍສຳລັບການຈ່າຍອອກ ຫຼື ບໍ່ — ປ້ອງກັນບໍ່ໃຫ້ຍອດຕິດລົບ.
@@ -340,27 +404,7 @@ export class CashService {
   ): Promise<void> {
     if (legs.length === 0) return;
 
-    const cashRequested = new Map<Currency, Decimal>();
-    const bankRequested = new Map<string, Decimal>();
-
-    for (const leg of legs) {
-      const raw =
-        typeof leg.amount === 'object' && leg.amount !== null && 'toFixed' in leg.amount
-          ? leg.amount.toFixed()
-          : leg.amount;
-      const amt = dec(raw);
-      if (!amt.isFinite() || amt.lte(0)) continue;
-
-      if (leg.method === 'CASH') {
-        const prev = cashRequested.get(leg.currency) ?? dec(0);
-        cashRequested.set(leg.currency, prev.plus(amt));
-      } else if (leg.method === 'BANK' && leg.bankAccountId) {
-        const key = `${leg.bankAccountId}:${leg.currency}`;
-        const prev = bankRequested.get(key) ?? dec(0);
-        bankRequested.set(key, prev.plus(amt));
-      }
-    }
-
+    const { cashRequested, bankRequested } = this.partitionRequestedLegs(legs);
     if (cashRequested.size === 0 && bankRequested.size === 0) return;
 
     const [cashBalances, bankBalances] = await Promise.all([
@@ -378,18 +422,143 @@ export class CashService {
       }
     }
 
-    for (const [key, reqAmount] of bankRequested) {
-      const [bankAccountId, currency] = key.split(':') as [string, Currency];
-      const bal = bankBalances.find(
-        (b) => b.bankAccountId === bankAccountId && b.currency === currency,
-      );
-      const currentBal = dec(bal?.actual ?? '0');
-      const bankName = bal?.bankNameLo ?? 'ທະນາຄານ';
-      if (reqAmount.gt(currentBal)) {
+    this.assertBankRequested(bankRequested, bankBalances, labelLo);
+  }
+
+  /**
+   * ຍອດເງິນສົດທີ່ຖືກຈອງໄວ້ໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະນີ້:
+   * - ລາຍການ Buyback ທີ່ອະນຸມັດແລ້ວ (APPROVED) ແຕ່ຜູ້ປະເມີນຍັງບໍ່ກົດຢືນຢັນຕັດເງິນຈິງ
+   * - ຄຳຮ້ອງມອບເງິນ (HANDOVER) ທີ່ອະນຸມັດແລ້ວ (APPROVED) ແຕ່ຍັງບໍ່ກົດ Completed
+   */
+  async reservedShiftWalletFunds(
+    shiftId: string,
+    options?: {
+      excludeBuybackId?: string;
+      excludeCashRequestId?: string;
+      client?: Prisma.TransactionClient | PrismaService;
+    },
+  ): Promise<Record<Currency, Decimal>> {
+    const reserved: Record<Currency, Decimal> = {
+      LAK: dec(0),
+      THB: dec(0),
+      USD: dec(0),
+    };
+    const client = options?.client ?? this.prisma;
+
+    const shift = await client.shift.findUnique({
+      where: { id: shiftId },
+      select: { id: true, userId: true, openedAt: true, status: true },
+    });
+    if (!shift || shift.status !== 'OPEN') return reserved;
+
+    const [buybackCashLegs, handoverLines] = await Promise.all([
+      client.buybackPayment.findMany({
+        where: {
+          method: 'CASH',
+          buyback: {
+            status: 'APPROVED',
+            deletedAt: null,
+            approvedById: shift.userId,
+            approvedAt: { gte: shift.openedAt },
+            ...(options?.excludeBuybackId ? { id: { not: options.excludeBuybackId } } : {}),
+          },
+        },
+        select: { currency: true, amount: true },
+      }),
+      client.cashRequestLine.findMany({
+        where: {
+          request: {
+            shiftId: shift.id,
+            direction: 'HANDOVER',
+            status: 'APPROVED',
+            deletedAt: null,
+            ...(options?.excludeCashRequestId ? { id: { not: options.excludeCashRequestId } } : {}),
+          },
+        },
+        select: { currency: true, amount: true },
+      }),
+    ]);
+
+    for (const row of [...buybackCashLegs, ...handoverLines]) {
+      reserved[row.currency] = reserved[row.currency].plus(dec(row.amount.toFixed()));
+    }
+
+    return reserved;
+  }
+
+  /**
+   * ກວດສອບຍອດກະເປົ໋າເງິນສົດ (To Day) ສຳລັບຂາເງິນສົດ (CASH) ແລະ Module Bank ສຳລັບຂາໂອນ (BANK)
+   * ເພື່ອປ້ອງກັນບໍ່ໃຫ້ຍອດເງິນສົດໃນກະເປົ໋າຕິດລົບ.
+   */
+  async assertShiftWalletAndBankFunds(
+    shiftId: string | undefined,
+    legs: Array<{
+      method: string;
+      bankAccountId?: string | null;
+      currency: Currency;
+      amount: Decimal | Prisma.Decimal | string | number;
+    }>,
+    labelLo = 'ການຈ່າຍເງິນ',
+    options?: {
+      excludeBuybackId?: string;
+      excludeCashRequestId?: string;
+      client?: Prisma.TransactionClient | PrismaService;
+    },
+  ): Promise<void> {
+    if (legs.length === 0) return;
+
+    const { cashRequested, bankRequested } = this.partitionRequestedLegs(legs);
+    if (cashRequested.size === 0 && bankRequested.size === 0) return;
+
+    const client = options?.client ?? this.prisma;
+
+    if (cashRequested.size > 0) {
+      if (!shiftId) {
         throw new BadRequestException(
-          `ຍອດເງິນ ${currency} ໃນບັນຊີ ${bankName} (Module Bank) ບໍ່ພໍສຳລັບ${labelLo} (ມີ ${currentBal.toFixed()} ${currency}, ຕ້ອງການຈ່າຍ ${reqAmount.toFixed()} ${currency})`,
+          `ກະລຸນາເປີດກະ ແລະ ເບີກເງິນເຂົ້າກະເປົ໋າເງິນສົດ (To Day) ກ່ອນ${labelLo}`,
         );
       }
+
+      if (client !== this.prisma) {
+        await client.$queryRaw`SELECT id FROM shifts WHERE id = ${shiftId} FOR UPDATE`;
+      }
+
+      const shift = await client.shift.findUnique({
+        where: { id: shiftId },
+        select: { status: true },
+      });
+      if (!shift || shift.status !== 'OPEN') {
+        throw new BadRequestException(
+          `ກະຂອງຜູ້ອະນຸມັດ (Payment) ບໍ່ໄດ້ເປີດຢູ່ — ບໍ່ສາມາດຕັດເງິນຈາກກະເປົ໋າເງິນສົດ (To Day) ສຳລັບ${labelLo}ໄດ້`,
+        );
+      }
+
+      const [walletBalances, reservedMap] = await Promise.all([
+        this.calculateShiftWalletBalance(shiftId, client),
+        this.reservedShiftWalletFunds(shiftId, { ...options, client }),
+      ]);
+
+      for (const [currency, reqAmount] of cashRequested) {
+        const bal = walletBalances.find((b) => b.currency === currency);
+        const currentBal = dec(bal?.balance ?? '0');
+        const reserved = reservedMap[currency] ?? dec(0);
+        const available = currentBal.minus(reserved);
+
+        if (reqAmount.gt(available)) {
+          const shortage = reqAmount.minus(available);
+          const reservedNote = reserved.gt(0)
+            ? ` (ຄົງເຫຼືອ ${currentBal.toFixed()} − ຈອງລໍຖ້າຢືນຢັນ ${reserved.toFixed()})`
+            : '';
+          throw new BadRequestException(
+            `ຍອດເງິນສົດ ${currency} ໃນກະເປົ໋າເງິນສົດ (To Day) ບໍ່ພໍສຳລັບ${labelLo}: ພ້ອມໃຊ້ ${available.toFixed()} ${currency}${reservedNote}, ຕ້ອງການຈ່າຍ ${reqAmount.toFixed()} ${currency} (ຍັງຂາດ ${shortage.toFixed()} ${currency})`,
+          );
+        }
+      }
+    }
+
+    if (bankRequested.size > 0) {
+      const bankBalances = await this.bankBalances();
+      this.assertBankRequested(bankRequested, bankBalances, labelLo);
     }
   }
 
@@ -561,16 +730,29 @@ export class CashService {
           inflow: '0',
           outflow: '0',
           balance: '0',
+          reserved: '0',
+          available: '0',
         })),
       };
     }
 
-    const balances = await this.calculateShiftWalletBalance(shift.id, this.prisma);
+    const [balances, reserved] = await Promise.all([
+      this.calculateShiftWalletBalance(shift.id, this.prisma),
+      this.reservedShiftWalletFunds(shift.id),
+    ]);
 
     return {
       shiftId: shift.id,
       openedAt: shift.openedAt,
-      balances,
+      balances: balances.map((b) => {
+        const resAmt = reserved[b.currency] ?? dec(0);
+        const available = dec(b.balance).minus(resAmt);
+        return {
+          ...b,
+          reserved: resAmt.toFixed(),
+          available: available.toFixed(),
+        };
+      }),
     };
   }
 

@@ -43,8 +43,9 @@ let CreditController = class CreditController {
     update(id, dto, user) {
         return this.credit.update(id, dto, user);
     }
-    review(id, dto, user) {
-        return this.credit.review(id, dto, user);
+    review(id, dto, user, req) {
+        const shiftId = req.shift?.id;
+        return this.credit.review(id, dto, user, shiftId);
     }
     cancel(id, dto, user) {
         return this.credit.cancel(id, dto, user);
@@ -102,13 +103,15 @@ __decorate([
 ], CreditController.prototype, "update", null);
 __decorate([
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(':id/review'),
     openapi.ApiResponse({ status: 201 }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __param(3, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, credit_dto_1.ReviewCreditDto, Object]),
+    __metadata("design:paramtypes", [String, credit_dto_1.ReviewCreditDto, Object, Object]),
     __metadata("design:returntype", void 0)
 ], CreditController.prototype, "review", null);
 __decorate([
