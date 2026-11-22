@@ -1120,7 +1120,9 @@ model GoldCredit {
   cabinetId   String?
   weightG     Decimal        @db.Decimal(18, 4)
   quantity    Int
-  /// ລາຄາຂາຍ
+  /// ຄ່າລາຍລວມທັງໝົດ (Σ patternFee × quantity) (LAK).
+  patternFee  Decimal        @default(0) @db.Decimal(18, 4)
+  /// ລາຄາຂາຍ (ລວມຄ່າລາຍແລ້ວ)
   sellPrice   Decimal        @db.Decimal(18, 4)
   /// ເງິນວາງດາວ
   downPayment Decimal        @db.Decimal(18, 4)
@@ -1159,7 +1161,9 @@ model CreditLine {
   cabinetId  String?
   weightG    Decimal @db.Decimal(18, 4)
   quantity   Int
-  /// ລາຄາຂາຍຂອງແຖວນີ້ (LAK).
+  /// ຄ່າລາຍຕໍ່ 1 ຊິ້ນ (LAK).
+  patternFee Decimal @default(0) @db.Decimal(18, 4)
+  /// ລາຄາຂາຍຂອງແຖວນີ້ (LAK) = (ລາຄາ Product + ຄ່າລາຍ) × ຈຳນວນ.
   sellPrice  Decimal @db.Decimal(18, 4)
   sortOrder  Int     @default(0)
 

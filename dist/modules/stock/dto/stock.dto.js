@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UpdateOldLedgerRowDto = exports.UpdateOldTypeBalanceDto = exports.UpdateSkuBalanceDto = exports.UpdateStockMovementDto = exports.CreateHandoverDto = exports.HandoverTypeLineDto = exports.HandoverQueryDto = exports.FactoryTrackingQueryDto = exports.FactoryAssessmentDto = exports.ReviewStockDto = exports.CreateTransferDto = exports.CreateStockOutDto = exports.CreateStockInDto = exports.StockLineDto = exports.StockOldHistoryQueryDto = exports.StockNewHistoryQueryDto = void 0;
+exports.UpdateOldLedgerRowDto = exports.UpdateOldTypeBalanceDto = exports.UpdateSkuBalanceDto = exports.UpdateStockMovementDto = exports.CancelHandoverDto = exports.UpdateHandoverDto = exports.CreateHandoverDto = exports.HandoverTypeLineDto = exports.HandoverQueryDto = exports.FactoryTrackingQueryDto = exports.FactoryAssessmentDto = exports.ReviewStockDto = exports.CreateTransferDto = exports.CreateStockOutDto = exports.CreateStockInDto = exports.StockLineDto = exports.StockOldHistoryQueryDto = exports.StockNewHistoryQueryDto = void 0;
 const openapi = require("@nestjs/swagger");
 const class_validator_1 = require("class-validator");
 const class_transformer_1 = require("class-transformer");
@@ -414,6 +414,62 @@ __decorate([
     (0, class_validator_1.MaxLength)(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }),
     __metadata("design:type", String)
 ], CreateHandoverDto.prototype, "note", void 0);
+class UpdateHandoverDto {
+    /** ນ້ຳໜັກລວມອອກ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ / ແທ່ງ. */
+    outWeightG;
+    /** ເນື້ອລ້ວນ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ. */
+    pureWeightG;
+    /** ມີແກ້ວ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ. */
+    glassWeightG;
+    /** ລາຍການ Buyback ຄຳຕົ້ມ ທີ່ມອບໃນຮອບນີ້. */
+    buybackIds;
+    note;
+    static _OPENAPI_METADATA_FACTORY() {
+        return { outWeightG: { required: false, type: () => String, description: "\u0E99\u0EC9\u0EB3\u0EDC\u0EB1\u0E81\u0EA5\u0EA7\u0EA1\u0EAD\u0EAD\u0E81 \u2014 \u0EAA\u0EB3\u0EA5\u0EB1\u0E9A \u0E84\u0EB3\u0E94\u0EB5 / \u0E84\u0EB3\u0EAB\u0E8D\u0EB8\u0E9A / \u0EC1\u0E97\u0EC8\u0E87." }, pureWeightG: { required: false, type: () => String, description: "\u0EC0\u0E99\u0EB7\u0EC9\u0EAD\u0EA5\u0EC9\u0EA7\u0E99 \u2014 \u0EAA\u0EB3\u0EA5\u0EB1\u0E9A \u0E84\u0EB3\u0E94\u0EB5 / \u0E84\u0EB3\u0EAB\u0E8D\u0EB8\u0E9A." }, glassWeightG: { required: false, type: () => String, description: "\u0EA1\u0EB5\u0EC1\u0E81\u0EC9\u0EA7 \u2014 \u0EAA\u0EB3\u0EA5\u0EB1\u0E9A \u0E84\u0EB3\u0E94\u0EB5 / \u0E84\u0EB3\u0EAB\u0E8D\u0EB8\u0E9A." }, buybackIds: { required: false, type: () => [String], description: "\u0EA5\u0EB2\u0E8D\u0E81\u0EB2\u0E99 Buyback \u0E84\u0EB3\u0E95\u0EBB\u0EC9\u0EA1 \u0E97\u0EB5\u0EC8\u0EA1\u0EAD\u0E9A\u0EC3\u0E99\u0EAE\u0EAD\u0E9A\u0E99\u0EB5\u0EC9.", minItems: 1 }, note: { required: false, type: () => String, maxLength: 500 } };
+    }
+}
+exports.UpdateHandoverDto = UpdateHandoverDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ນ້ຳໜັກລວມອອກ' }),
+    __metadata("design:type", String)
+], UpdateHandoverDto.prototype, "outWeightG", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ເນື້ອລ້ວນ' }),
+    __metadata("design:type", String)
+], UpdateHandoverDto.prototype, "pureWeightG", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ນ້ຳໜັກມີແກ້ວ' }),
+    __metadata("design:type", String)
+], UpdateHandoverDto.prototype, "glassWeightG", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMinSize)(1, { message: 'ຕ້ອງເລືອກລາຍການຄຳເກົ່າຢ່າງໜ້ອຍ 1 ລາຍການ' }),
+    (0, class_validator_1.IsString)({ each: true }),
+    __metadata("design:type", Array)
+], UpdateHandoverDto.prototype, "buybackIds", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }),
+    __metadata("design:type", String)
+], UpdateHandoverDto.prototype, "note", void 0);
+class CancelHandoverDto {
+    reason;
+    static _OPENAPI_METADATA_FACTORY() {
+        return { reason: { required: false, type: () => String, maxLength: 300 } };
+    }
+}
+exports.CancelHandoverDto = CancelHandoverDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(300, { message: 'ເຫດຜົນຍາວເກີນ 300 ຕົວ' }),
+    __metadata("design:type", String)
+], CancelHandoverDto.prototype, "reason", void 0);
 class UpdateStockMovementDto {
     partnerId;
     goldTypeId;

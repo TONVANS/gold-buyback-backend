@@ -97,9 +97,10 @@ class CreditLineDto {
     cabinetId;
     weightG;
     quantity;
+    patternFee;
     sellPrice;
     static _OPENAPI_METADATA_FACTORY() {
-        return { goldItemId: { required: true, type: () => String }, cabinetId: { required: true, type: () => String }, weightG: { required: true, type: () => String }, quantity: { required: true, type: () => Number, minimum: 1 }, sellPrice: { required: true, type: () => String } };
+        return { goldItemId: { required: true, type: () => String }, cabinetId: { required: true, type: () => String }, weightG: { required: true, type: () => String }, quantity: { required: true, type: () => Number, minimum: 1 }, patternFee: { required: false, type: () => String }, sellPrice: { required: true, type: () => String } };
     }
 }
 exports.CreditLineDto = CreditLineDto;
@@ -123,6 +124,11 @@ __decorate([
     __metadata("design:type", Number)
 ], CreditLineDto.prototype, "quantity", void 0);
 __decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ຄ່າລາຍ' }),
+    __metadata("design:type", String)
+], CreditLineDto.prototype, "patternFee", void 0);
+__decorate([
     (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ລາຄາຂາຍ' }),
     __metadata("design:type", String)
 ], CreditLineDto.prototype, "sellPrice", void 0);
@@ -134,13 +140,14 @@ class CreateCreditDto {
     cabinetId;
     weightG;
     quantity;
+    patternFee;
     sellPrice;
     downPayment;
     /** Superseded by `receipts`; accepted so an older client still works. */
     receipt;
     receipts;
     static _OPENAPI_METADATA_FACTORY() {
-        return { phone: { required: true, type: () => String, pattern: "^\\d{8}$" }, lines: { required: false, type: () => [require("./credit.dto").CreditLineDto], description: "Multi-line items; when absent, legacy single-line fields below are used.", minItems: 1 }, goldItemId: { required: false, type: () => String }, cabinetId: { required: false, type: () => String }, weightG: { required: false, type: () => String }, quantity: { required: false, type: () => Number, minimum: 1 }, sellPrice: { required: false, type: () => String }, downPayment: { required: true, type: () => String }, receipt: { required: false, type: () => require("./credit.dto").CreditReceiptDto, description: "Superseded by `receipts`; accepted so an older client still works." }, receipts: { required: false, type: () => [require("./credit.dto").CreditReceiptDto] } };
+        return { phone: { required: true, type: () => String, pattern: "^\\d{8}$" }, lines: { required: false, type: () => [require("./credit.dto").CreditLineDto], description: "Multi-line items; when absent, legacy single-line fields below are used.", minItems: 1 }, goldItemId: { required: false, type: () => String }, cabinetId: { required: false, type: () => String }, weightG: { required: false, type: () => String }, quantity: { required: false, type: () => Number, minimum: 1 }, patternFee: { required: false, type: () => String }, sellPrice: { required: false, type: () => String }, downPayment: { required: true, type: () => String }, receipt: { required: false, type: () => require("./credit.dto").CreditReceiptDto, description: "Superseded by `receipts`; accepted so an older client still works." }, receipts: { required: false, type: () => [require("./credit.dto").CreditReceiptDto] } };
     }
 }
 exports.CreateCreditDto = CreateCreditDto;
@@ -181,6 +188,11 @@ __decorate([
 ], CreateCreditDto.prototype, "quantity", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ຄ່າລາຍ' }),
+    __metadata("design:type", String)
+], CreateCreditDto.prototype, "patternFee", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
     (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ລາຄາຂາຍ' }),
     __metadata("design:type", String)
 ], CreateCreditDto.prototype, "sellPrice", void 0);
@@ -208,11 +220,12 @@ class UpdateCreditDto {
     cabinetId;
     weightG;
     quantity;
+    patternFee;
     sellPrice;
     downPayment;
     receipts;
     static _OPENAPI_METADATA_FACTORY() {
-        return { phone: { required: false, type: () => String, pattern: "^\\d{8}$" }, lines: { required: false, type: () => [require("./credit.dto").CreditLineDto], minItems: 1 }, goldItemId: { required: false, type: () => String }, cabinetId: { required: false, type: () => String }, weightG: { required: false, type: () => String }, quantity: { required: false, type: () => Number, minimum: 1 }, sellPrice: { required: false, type: () => String }, downPayment: { required: false, type: () => String }, receipts: { required: false, type: () => [require("./credit.dto").CreditReceiptDto] } };
+        return { phone: { required: false, type: () => String, pattern: "^\\d{8}$" }, lines: { required: false, type: () => [require("./credit.dto").CreditLineDto], minItems: 1 }, goldItemId: { required: false, type: () => String }, cabinetId: { required: false, type: () => String }, weightG: { required: false, type: () => String }, quantity: { required: false, type: () => Number, minimum: 1 }, patternFee: { required: false, type: () => String }, sellPrice: { required: false, type: () => String }, downPayment: { required: false, type: () => String }, receipts: { required: false, type: () => [require("./credit.dto").CreditReceiptDto] } };
     }
 }
 exports.UpdateCreditDto = UpdateCreditDto;
@@ -252,6 +265,11 @@ __decorate([
     (0, class_validator_1.Min)(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }),
     __metadata("design:type", Number)
 ], UpdateCreditDto.prototype, "quantity", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ຄ່າລາຍ' }),
+    __metadata("design:type", String)
+], UpdateCreditDto.prototype, "patternFee", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, decimal_string_validator_1.IsDecimalString)({ labelLo: 'ລາຄາຂາຍ' }),

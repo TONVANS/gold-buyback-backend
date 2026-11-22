@@ -69,6 +69,10 @@ export class CreditLineDto {
   @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' })
   quantity: number;
 
+  @IsOptional()
+  @IsDecimalString({ labelLo: 'ຄ່າລາຍ' })
+  patternFee?: string;
+
   @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' })
   sellPrice: string;
 }
@@ -89,6 +93,7 @@ export class CreateCreditDto {
   @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກຕູ້ເຄື່ອງ' }) cabinetId?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG?: string;
   @IsOptional() @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity?: number;
+  @IsOptional() @IsDecimalString({ labelLo: 'ຄ່າລາຍ' }) patternFee?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice?: string;
   @IsDecimalString({ labelLo: 'ເງິນວາງດາວ' }) downPayment: string;
 
@@ -121,6 +126,7 @@ export class UpdateCreditDto {
   @IsOptional() @IsString() @IsNotEmpty({ message: 'ກະລຸນາເລືອກຕູ້ເຄື່ອງ' }) cabinetId?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG?: string;
   @IsOptional() @IsInt() @Min(1, { message: 'ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1' }) quantity?: number;
+  @IsOptional() @IsDecimalString({ labelLo: 'ຄ່າລາຍ' }) patternFee?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ລາຄາຂາຍ' }) sellPrice?: string;
   @IsOptional() @IsDecimalString({ labelLo: 'ເງິນວາງດາວ' }) downPayment?: string;
 

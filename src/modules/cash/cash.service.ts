@@ -27,6 +27,7 @@ const CURRENCIES: Currency[] = ['LAK', 'THB', 'USD'];
 
 /** Counter transactions that settle inside a cashier shift wallet rather than directly against Module Cash. */
 const COUNTER_WALLET_REFS = ['Buyback', 'GoldExchange', 'GoldCredit'];
+const WALLET_HISTORY_REFS = ['CashRequest', 'GoldCredit', 'Buyback', 'GoldExchange', 'ShiftClose'];
 const MODULE_CASH_SCOPE: Prisma.CashTransactionWhereInput = {
   OR: [
     { shiftId: null },
@@ -666,6 +667,22 @@ export class CashService {
     });
   }
 
+  private isWalletDrawerInflow(refType: string | null, type: string): boolean {
+    if (refType === 'CashRequest') {
+      // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
+      // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
+      return type === 'OUT';
+    }
+    if (['Buyback', 'GoldExchange', 'GoldCredit'].includes(refType ?? '')) {
+      // Payouts & change out are 'OUT' (outflow from drawer); receipts, change returned or incoming fees are 'IN' (inflow).
+      return type === 'IN';
+    }
+    if (refType === 'ShiftClose') {
+      return false;
+    }
+    return CASH_SIGN[type] === 1;
+  }
+
   /**
    * ຍອດເງິນໃນກະເປົ໋າເງິນສົດຂອງຜູ້ໃຊ້ (ກະທີ່ເປີດຢູ່).
    *
@@ -678,14 +695,11 @@ export class CashService {
     shiftId: string,
     client: Prisma.TransactionClient | PrismaService = this.prisma,
   ): Promise<{ currency: Currency; inflow: string; outflow: string; balance: string }[]> {
-    const IN_REFS = ['CashRequest', 'GoldCredit'];
-    const OUT_REFS = ['Buyback', 'GoldExchange', 'CashRequest', 'ShiftClose'];
-
     const rows = await client.cashTransaction.findMany({
       where: {
         shiftId,
         deletedAt: null,
-        refType: { in: [...new Set([...IN_REFS, ...OUT_REFS])] },
+        refType: { in: WALLET_HISTORY_REFS },
       },
       select: { currency: true, type: true, amount: true, refType: true },
     });
@@ -697,22 +711,7 @@ export class CashService {
         if (row.currency !== currency) continue;
         const amount = dec(row.amount.toFixed());
 
-        // Cash movements from the perspective of the cashier's drawer (wallet):
-        let isDrawerInflow = false;
-        if (row.refType === 'CashRequest') {
-          // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
-          // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
-          isDrawerInflow = row.type === 'OUT';
-        } else if (['Buyback', 'GoldExchange', 'GoldCredit'].includes(row.refType ?? '')) {
-          // Payouts & change out are 'OUT' (outflow from drawer); receipts, change returned or incoming fees are 'IN' (inflow).
-          isDrawerInflow = row.type === 'IN';
-        } else if (row.refType === 'ShiftClose') {
-          isDrawerInflow = false;
-        } else {
-          isDrawerInflow = CASH_SIGN[row.type] === 1;
-        }
-
-        if (isDrawerInflow) inflow = inflow.plus(amount);
+        if (this.isWalletDrawerInflow(row.refType, row.type)) inflow = inflow.plus(amount);
         else outflow = outflow.plus(amount);
       }
       return {
@@ -722,6 +721,50 @@ export class CashService {
         balance: inflow.minus(outflow).toFixed(),
       };
     });
+  }
+
+  /**
+   * ປະຫວັດເງິນສົດເຂົ້າ-ອອກທັງໝົດໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະທີ່ເປີດຢູ່,
+   * ລວມທັງ ເບີກ/ມອບເງິນ, Buyback, ປ່ຽນເປັນເງິນ, ສິນເຊື່ອ ແລະ ເງິນທອນ.
+   */
+  async walletHistory(userId: string, query: HistoryRangeDto, user?: AuthenticatedUser) {
+    const range = this.range.resolve(query, user);
+    const shift = await this.prisma.shift.findFirst({
+      where: { userId, closedAt: null, status: 'OPEN' },
+      orderBy: { openedAt: 'desc' },
+      select: { id: true },
+    });
+    if (!shift) {
+      return this.range.page([], 0, range);
+    }
+
+    const hasDateFilter = Boolean(
+      query.from_date ?? query.fromDate ?? query.to_date ?? query.toDate,
+    );
+    const where: Prisma.CashTransactionWhereInput = {
+      shiftId: shift.id,
+      deletedAt: null,
+      refType: { in: WALLET_HISTORY_REFS },
+      ...(hasDateFilter ? { createdAt: HistoryRangeService.window(range) } : {}),
+    };
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.cashTransaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: range.skip,
+        take: range.take,
+      }),
+      this.prisma.cashTransaction.count({ where }),
+    ]);
+
+    const withCreators = await this.audit.withCreatorNames(rows);
+    const enriched = withCreators.map((row) => ({
+      ...row,
+      direction: (this.isWalletDrawerInflow(row.refType, row.type) ? 'IN' : 'OUT') as 'IN' | 'OUT',
+    }));
+
+    return this.range.page(enriched, total, range);
   }
 
   async walletBalance(userId: string) {
@@ -1025,10 +1068,19 @@ export class CashService {
    */
   /**
    * ຍອດທະນາຄານ ຢູ່ມື້ການຄ້າໜຶ່ງ. `asOf` ວ່າງ = ມື້ນີ້.
-   * ຍົກຍອດຂ້າມມື້ ແບບດຽວກັນກັບເງິນສົດ — ເງິນໃນບັນຊີບໍ່ໄດ້ຫາຍຕອນຂຶ້ນມື້ໃໝ່.
+   *
+   * ປົກກະຕິ (Module Bank ຂອງ FC/Admin) ຈະຍົກຍອດຂ້າມມື້ — ເງິນໃນບັນຊີບໍ່ໄດ້ຫາຍຕອນຂຶ້ນມື້ໃໝ່.
+   * ແຕ່ຖ້າ `options?.todayOnly` ເປັນ true (ໜ້າ Bank (To Day) ຂອງ Payment),
+   * ຈະບໍ່ລວມຍອດຍົກມາ (opening = 0) ເພື່ອໃຫ້ລີເຊັດເປັນ 0 ເມື່ອຂຶ້ນມື້ໃໝ່
+   * ແລະ ສະແດງສະເພາະຍອດສຸດທິຂອງມື້ນັ້ນ (inflow − outflow).
    */
-  async bankBalances(asOf?: Date, refTypes?: string[]) {
+  async bankBalances(
+    asOf?: Date,
+    refTypes?: string[],
+    options?: { todayOnly?: boolean },
+  ) {
     const date = asOf ?? (await this.businessDay.current()).date;
+    const todayOnly = options?.todayOnly ?? false;
     // ກອງຕາມທີ່ມາ ເມື່ອຜູ້ເອີ້ນລະບຸ — ໜ້າ Bank (To Day) ຂອງ payment ສະແດງ
     // ສະເພາະເງິນໜ້າຮ້ານ (Buyback / ປ່ຽນເປັນເງິນ / ສິນເຊື່ອ) ຕາມທີ່ລູກຄ້າກຳນົດ.
     const source = refTypes?.length ? { refType: { in: refTypes } } : {};
@@ -1040,11 +1092,13 @@ export class CashService {
         where: { deletedAt: null, businessDay: { date }, ...source },
         _sum: { amount: true },
       }),
-      this.prisma.bankTransaction.groupBy({
-        by: ['bankAccountId', 'currency', 'type'],
-        where: { deletedAt: null, businessDay: { date: { lt: date } }, ...source },
-        _sum: { amount: true },
-      }),
+      todayOnly
+        ? Promise.resolve([])
+        : this.prisma.bankTransaction.groupBy({
+            by: ['bankAccountId', 'currency', 'type'],
+            where: { deletedAt: null, businessDay: { date: { lt: date } }, ...source },
+            _sum: { amount: true },
+          }),
       this.prisma.bankNetBalance.findMany({ where: { businessDay: { date } } }),
     ]);
 

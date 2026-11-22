@@ -120,11 +120,23 @@ let StockController = class StockController {
     pendingOldGoldItems(goldTypeId) {
         return this.stock.pendingOldGoldItems(goldTypeId);
     }
+    getHandover(id) {
+        return this.stock.getHandover(id);
+    }
     createHandover(dto, user, req) {
         const shiftId = req.shift?.id;
         if (!shiftId)
             throw new common_1.BadRequestException('ຕ້ອງເປີດກະກ່ອນມອບຄຳ');
         return this.stock.createHandover(dto, user, shiftId);
+    }
+    updateHandover(id, dto, user) {
+        return this.stock.updateHandover(id, dto, user);
+    }
+    cancelHandover(id, dto, user) {
+        return this.stock.cancelHandover(id, dto, user);
+    }
+    deleteHandover(id, user) {
+        return this.stock.deleteHandover(id, user);
     }
     reviewHandover(id, dto, user) {
         return this.stock.reviewHandover(id, dto, user);
@@ -336,6 +348,14 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], StockController.prototype, "pendingOldGoldItems", null);
 __decorate([
+    (0, common_1.Get)('handovers/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], StockController.prototype, "getHandover", null);
+__decorate([
     (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
     (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)('handovers'),
@@ -347,6 +367,38 @@ __decorate([
     __metadata("design:paramtypes", [stock_dto_1.CreateHandoverDto, Object, Object]),
     __metadata("design:returntype", void 0)
 ], StockController.prototype, "createHandover", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Patch)('handovers/:id'),
+    openapi.ApiResponse({ status: 200, type: Object }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, stock_dto_1.UpdateHandoverDto, Object]),
+    __metadata("design:returntype", void 0)
+], StockController.prototype, "updateHandover", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Post)('handovers/:id/cancel'),
+    openapi.ApiResponse({ status: 201 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, stock_dto_1.CancelHandoverDto, Object]),
+    __metadata("design:returntype", void 0)
+], StockController.prototype, "cancelHandover", null);
+__decorate([
+    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, common_1.Delete)('handovers/:id'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], StockController.prototype, "deleteHandover", null);
 __decorate([
     (0, roles_decorator_1.Roles)('WAREHOUSE', 'ADMIN', 'MANAGER'),
     (0, common_1.Post)('handovers/:id/review'),

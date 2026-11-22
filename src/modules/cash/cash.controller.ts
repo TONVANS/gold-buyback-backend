@@ -81,6 +81,12 @@ export class CashController {
     return this.cash.walletBalance(user.id);
   }
 
+  /** ປະຫວັດເງິນສົດເຂົ້າ-ອອກທັງໝົດໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະທີ່ເປີດຢູ່. */
+  @Get('wallet/history')
+  walletHistory(@Query() query: HistoryRangeDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cash.walletHistory(user.id, query, user);
+  }
+
   /** ຍອດລວມໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະ Payment ທີ່ກຳລັງເປີດຢູ່ (ສຳລັບ Valuer ກວດກ່ອນຈ່າຍ/ທອນ). */
   @Get('wallet/counter')
   counterWallet() {
@@ -105,7 +111,9 @@ export class CashController {
 
   @Get('bank/balances')
   bankBalances(@Query('sources') sources?: string) {
-    return this.cash.bankBalances(undefined, COUNTER_SOURCES[sources ?? ''] );
+    return this.cash.bankBalances(undefined, COUNTER_SOURCES[sources ?? ''], {
+      todayOnly: sources === 'counter',
+    });
   }
 
   @Get('bank/history')

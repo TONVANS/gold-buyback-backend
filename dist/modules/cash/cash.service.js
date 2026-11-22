@@ -23,6 +23,7 @@ const D = (value) => new client_1.Prisma.Decimal(value.toFixed());
 const CURRENCIES = ['LAK', 'THB', 'USD'];
 /** Counter transactions that settle inside a cashier shift wallet rather than directly against Module Cash. */
 const COUNTER_WALLET_REFS = ['Buyback', 'GoldExchange', 'GoldCredit'];
+const WALLET_HISTORY_REFS = ['CashRequest', 'GoldCredit', 'Buyback', 'GoldExchange', 'ShiftClose'];
 const MODULE_CASH_SCOPE = {
     OR: [
         { shiftId: null },
@@ -522,6 +523,21 @@ let CashService = class CashService {
             };
         });
     }
+    isWalletDrawerInflow(refType, type) {
+        if (refType === 'CashRequest') {
+            // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
+            // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
+            return type === 'OUT';
+        }
+        if (['Buyback', 'GoldExchange', 'GoldCredit'].includes(refType ?? '')) {
+            // Payouts & change out are 'OUT' (outflow from drawer); receipts, change returned or incoming fees are 'IN' (inflow).
+            return type === 'IN';
+        }
+        if (refType === 'ShiftClose') {
+            return false;
+        }
+        return CASH_SIGN[type] === 1;
+    }
     /**
      * ຍອດເງິນໃນກະເປົ໋າເງິນສົດຂອງຜູ້ໃຊ້ (ກະທີ່ເປີດຢູ່).
      *
@@ -531,13 +547,11 @@ let CashService = class CashService {
      * ສະນັ້ນຈຶ່ງນັບສະເພາະ refType ເຫຼົ່ານີ້ ແລະ ສະເພາະກະນັ້ນ — ບໍ່ແມ່ນທັງມື້.
      */
     async calculateShiftWalletBalance(shiftId, client = this.prisma) {
-        const IN_REFS = ['CashRequest', 'GoldCredit'];
-        const OUT_REFS = ['Buyback', 'GoldExchange', 'CashRequest', 'ShiftClose'];
         const rows = await client.cashTransaction.findMany({
             where: {
                 shiftId,
                 deletedAt: null,
-                refType: { in: [...new Set([...IN_REFS, ...OUT_REFS])] },
+                refType: { in: WALLET_HISTORY_REFS },
             },
             select: { currency: true, type: true, amount: true, refType: true },
         });
@@ -548,24 +562,7 @@ let CashService = class CashService {
                 if (row.currency !== currency)
                     continue;
                 const amount = (0, domain_1.dec)(row.amount.toFixed());
-                // Cash movements from the perspective of the cashier's drawer (wallet):
-                let isDrawerInflow = false;
-                if (row.refType === 'CashRequest') {
-                    // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
-                    // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
-                    isDrawerInflow = row.type === 'OUT';
-                }
-                else if (['Buyback', 'GoldExchange', 'GoldCredit'].includes(row.refType ?? '')) {
-                    // Payouts & change out are 'OUT' (outflow from drawer); receipts, change returned or incoming fees are 'IN' (inflow).
-                    isDrawerInflow = row.type === 'IN';
-                }
-                else if (row.refType === 'ShiftClose') {
-                    isDrawerInflow = false;
-                }
-                else {
-                    isDrawerInflow = CASH_SIGN[row.type] === 1;
-                }
-                if (isDrawerInflow)
+                if (this.isWalletDrawerInflow(row.refType, row.type))
                     inflow = inflow.plus(amount);
                 else
                     outflow = outflow.plus(amount);
@@ -577,6 +574,43 @@ let CashService = class CashService {
                 balance: inflow.minus(outflow).toFixed(),
             };
         });
+    }
+    /**
+     * ປະຫວັດເງິນສົດເຂົ້າ-ອອກທັງໝົດໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະທີ່ເປີດຢູ່,
+     * ລວມທັງ ເບີກ/ມອບເງິນ, Buyback, ປ່ຽນເປັນເງິນ, ສິນເຊື່ອ ແລະ ເງິນທອນ.
+     */
+    async walletHistory(userId, query, user) {
+        const range = this.range.resolve(query, user);
+        const shift = await this.prisma.shift.findFirst({
+            where: { userId, closedAt: null, status: 'OPEN' },
+            orderBy: { openedAt: 'desc' },
+            select: { id: true },
+        });
+        if (!shift) {
+            return this.range.page([], 0, range);
+        }
+        const hasDateFilter = Boolean(query.from_date ?? query.fromDate ?? query.to_date ?? query.toDate);
+        const where = {
+            shiftId: shift.id,
+            deletedAt: null,
+            refType: { in: WALLET_HISTORY_REFS },
+            ...(hasDateFilter ? { createdAt: history_range_service_1.HistoryRangeService.window(range) } : {}),
+        };
+        const [rows, total] = await this.prisma.$transaction([
+            this.prisma.cashTransaction.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: range.skip,
+                take: range.take,
+            }),
+            this.prisma.cashTransaction.count({ where }),
+        ]);
+        const withCreators = await this.audit.withCreatorNames(rows);
+        const enriched = withCreators.map((row) => ({
+            ...row,
+            direction: (this.isWalletDrawerInflow(row.refType, row.type) ? 'IN' : 'OUT'),
+        }));
+        return this.range.page(enriched, total, range);
     }
     async walletBalance(userId) {
         const shift = await this.prisma.shift.findFirst({
@@ -841,10 +875,15 @@ let CashService = class CashService {
      */
     /**
      * ຍອດທະນາຄານ ຢູ່ມື້ການຄ້າໜຶ່ງ. `asOf` ວ່າງ = ມື້ນີ້.
-     * ຍົກຍອດຂ້າມມື້ ແບບດຽວກັນກັບເງິນສົດ — ເງິນໃນບັນຊີບໍ່ໄດ້ຫາຍຕອນຂຶ້ນມື້ໃໝ່.
+     *
+     * ປົກກະຕິ (Module Bank ຂອງ FC/Admin) ຈະຍົກຍອດຂ້າມມື້ — ເງິນໃນບັນຊີບໍ່ໄດ້ຫາຍຕອນຂຶ້ນມື້ໃໝ່.
+     * ແຕ່ຖ້າ `options?.todayOnly` ເປັນ true (ໜ້າ Bank (To Day) ຂອງ Payment),
+     * ຈະບໍ່ລວມຍອດຍົກມາ (opening = 0) ເພື່ອໃຫ້ລີເຊັດເປັນ 0 ເມື່ອຂຶ້ນມື້ໃໝ່
+     * ແລະ ສະແດງສະເພາະຍອດສຸດທິຂອງມື້ນັ້ນ (inflow − outflow).
      */
-    async bankBalances(asOf, refTypes) {
+    async bankBalances(asOf, refTypes, options) {
         const date = asOf ?? (await this.businessDay.current()).date;
+        const todayOnly = options?.todayOnly ?? false;
         // ກອງຕາມທີ່ມາ ເມື່ອຜູ້ເອີ້ນລະບຸ — ໜ້າ Bank (To Day) ຂອງ payment ສະແດງ
         // ສະເພາະເງິນໜ້າຮ້ານ (Buyback / ປ່ຽນເປັນເງິນ / ສິນເຊື່ອ) ຕາມທີ່ລູກຄ້າກຳນົດ.
         const source = refTypes?.length ? { refType: { in: refTypes } } : {};
@@ -855,11 +894,13 @@ let CashService = class CashService {
                 where: { deletedAt: null, businessDay: { date }, ...source },
                 _sum: { amount: true },
             }),
-            this.prisma.bankTransaction.groupBy({
-                by: ['bankAccountId', 'currency', 'type'],
-                where: { deletedAt: null, businessDay: { date: { lt: date } }, ...source },
-                _sum: { amount: true },
-            }),
+            todayOnly
+                ? Promise.resolve([])
+                : this.prisma.bankTransaction.groupBy({
+                    by: ['bankAccountId', 'currency', 'type'],
+                    where: { deletedAt: null, businessDay: { date: { lt: date } }, ...source },
+                    _sum: { amount: true },
+                }),
             this.prisma.bankNetBalance.findMany({ where: { businessDay: { date } } }),
         ]);
         const netByKey = new Map(netBalances.map((n) => [`${n.bankAccountId}:${n.currency}`, (0, domain_1.dec)(n.netAmount.toFixed())]));

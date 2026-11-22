@@ -62,6 +62,10 @@ let CashController = class CashController {
     wallet(user) {
         return this.cash.walletBalance(user.id);
     }
+    /** ປະຫວັດເງິນສົດເຂົ້າ-ອອກທັງໝົດໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະທີ່ເປີດຢູ່. */
+    walletHistory(query, user) {
+        return this.cash.walletHistory(user.id, query, user);
+    }
     /** ຍອດລວມໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະ Payment ທີ່ກຳລັງເປີດຢູ່ (ສຳລັບ Valuer ກວດກ່ອນຈ່າຍ/ທອນ). */
     counterWallet() {
         return this.cash.counterWalletBalance();
@@ -74,7 +78,9 @@ let CashController = class CashController {
     }
     /* ---- §3.7 Module Bank ---- */
     bankBalances(sources) {
-        return this.cash.bankBalances(undefined, COUNTER_SOURCES[sources ?? '']);
+        return this.cash.bankBalances(undefined, COUNTER_SOURCES[sources ?? ''], {
+            todayOnly: sources === 'counter',
+        });
     }
     bankHistory(query, user) {
         return this.cash.bankHistory(query, user, COUNTER_SOURCES[query.sources ?? '']);
@@ -147,6 +153,16 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", void 0)
 ], CashController.prototype, "wallet", null);
+__decorate([
+    openapi.ApiOperation({ summary: "\u0E9B\u0EB0\u0EAB\u0EA7\u0EB1\u0E94\u0EC0\u0E87\u0EB4\u0E99\u0EAA\u0EBB\u0E94\u0EC0\u0E82\u0EBB\u0EC9\u0EB2-\u0EAD\u0EAD\u0E81\u0E97\u0EB1\u0E87\u0EDD\u0EBB\u0E94\u0EC3\u0E99\u0E81\u0EB0\u0EC0\u0E9B\u0EBB\u0ECB\u0EB2\u0EC0\u0E87\u0EB4\u0E99\u0EAA\u0EBB\u0E94 (To Day) \u0E82\u0EAD\u0E87\u0E81\u0EB0\u0E97\u0EB5\u0EC8\u0EC0\u0E9B\u0EB5\u0E94\u0EA2\u0EB9\u0EC8." }),
+    (0, common_1.Get)('wallet/history'),
+    openapi.ApiResponse({ status: 200 }),
+    __param(0, (0, common_1.Query)()),
+    __param(1, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [history_range_dto_1.HistoryRangeDto, Object]),
+    __metadata("design:returntype", void 0)
+], CashController.prototype, "walletHistory", null);
 __decorate([
     openapi.ApiOperation({ summary: "\u0E8D\u0EAD\u0E94\u0EA5\u0EA7\u0EA1\u0EC3\u0E99\u0E81\u0EB0\u0EC0\u0E9B\u0EBB\u0ECB\u0EB2\u0EC0\u0E87\u0EB4\u0E99\u0EAA\u0EBB\u0E94 (To Day) \u0E82\u0EAD\u0E87\u0E81\u0EB0 Payment \u0E97\u0EB5\u0EC8\u0E81\u0EB3\u0EA5\u0EB1\u0E87\u0EC0\u0E9B\u0EB5\u0E94\u0EA2\u0EB9\u0EC8 (\u0EAA\u0EB3\u0EA5\u0EB1\u0E9A Valuer \u0E81\u0EA7\u0E94\u0E81\u0EC8\u0EAD\u0E99\u0E88\u0EC8\u0EB2\u0E8D/\u0E97\u0EAD\u0E99)." }),
     (0, common_1.Get)('wallet/counter'),

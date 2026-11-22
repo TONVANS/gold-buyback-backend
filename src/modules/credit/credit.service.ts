@@ -240,6 +240,7 @@ export class CreditService {
     cabinetId?: string;
     weightG?: string;
     quantity?: number;
+    patternFee?: string;
     sellPrice?: string;
   }): CreditLineDto[] {
     if (dto.lines?.length) return dto.lines;
@@ -256,6 +257,7 @@ export class CreditService {
           cabinetId: dto.cabinetId,
           weightG: dto.weightG,
           quantity: dto.quantity,
+          patternFee: dto.patternFee,
           sellPrice: dto.sellPrice,
         },
       ];
@@ -279,6 +281,10 @@ export class CreditService {
       if (!Number.isInteger(line.quantity) || line.quantity < 1) {
         throw new BadRequestException('ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1');
       }
+      const patternFee = dec(line.patternFee ?? 0);
+      if (!patternFee.isFinite() || patternFee.isNegative()) {
+        throw new BadRequestException('ຄ່າລາຍຕ້ອງບໍ່ຕິດລົບ');
+      }
       const sellPrice = dec(line.sellPrice);
       if (!sellPrice.isFinite() || sellPrice.lte(0)) {
         throw new BadRequestException('ລາຄາຂາຍຕ້ອງໃຫຍ່ກວ່າ 0');
@@ -289,6 +295,7 @@ export class CreditService {
         cabinetId: line.cabinetId,
         weightG,
         quantity: line.quantity,
+        patternFee,
         sellPrice,
       };
     });
@@ -319,6 +326,10 @@ export class CreditService {
       dec(0),
     );
     const totalQuantity = parsed.reduce((sum, l) => sum + l.quantity, 0);
+    const totalPatternFee = parsed.reduce(
+      (sum, l) => sum.plus(l.patternFee.mul(l.quantity)),
+      dec(0),
+    );
     const totalSellPrice = parsed.reduce((sum, l) => sum.plus(l.sellPrice), dec(0));
 
     return {
@@ -326,6 +337,7 @@ export class CreditService {
       head: parsed[0]!,
       totalWeightG,
       totalQuantity,
+      totalPatternFee,
       totalSellPrice,
     };
   }
@@ -384,6 +396,7 @@ export class CreditService {
           cabinetId: resolvedLines.head.cabinetId,
           weightG: D(resolvedLines.totalWeightG),
           quantity: resolvedLines.totalQuantity,
+          patternFee: D(resolvedLines.totalPatternFee),
           sellPrice: D(sellPrice),
           downPayment: D(downPayment),
           outstanding: D(outstanding),
@@ -395,6 +408,7 @@ export class CreditService {
               cabinetId: line.cabinetId,
               weightG: D(line.weightG),
               quantity: line.quantity,
+              patternFee: D(line.patternFee),
               sellPrice: D(line.sellPrice),
               sortOrder: index,
             })),
@@ -466,12 +480,18 @@ export class CreditService {
     }
 
     const nextPhone = dto.phone ?? existing.customer.phone;
+    const existingUnitPatternFee =
+      existing.quantity > 0
+        ? dec(existing.patternFee).div(existing.quantity).toFixed()
+        : '0';
+
     const rawNextLines: CreditLineDto[] = dto.lines?.length
       ? dto.lines
       : dto.goldItemId !== undefined ||
           dto.cabinetId !== undefined ||
           dto.weightG !== undefined ||
           dto.quantity !== undefined ||
+          dto.patternFee !== undefined ||
           dto.sellPrice !== undefined
         ? [
             {
@@ -479,6 +499,7 @@ export class CreditService {
               cabinetId: dto.cabinetId ?? existing.cabinetId ?? '',
               weightG: dto.weightG ?? existing.weightG.toFixed(),
               quantity: dto.quantity ?? existing.quantity,
+              patternFee: dto.patternFee ?? existingUnitPatternFee,
               sellPrice: dto.sellPrice ?? existing.sellPrice.toFixed(),
             },
           ]
@@ -488,6 +509,7 @@ export class CreditService {
               cabinetId: l.cabinetId ?? existing.cabinetId ?? '',
               weightG: l.weightG.toFixed(),
               quantity: l.quantity,
+              patternFee: l.patternFee.toFixed(),
               sellPrice: l.sellPrice.toFixed(),
             }))
           : [
@@ -496,6 +518,7 @@ export class CreditService {
                 cabinetId: existing.cabinetId ?? '',
                 weightG: existing.weightG.toFixed(),
                 quantity: existing.quantity,
+                patternFee: existingUnitPatternFee,
                 sellPrice: existing.sellPrice.toFixed(),
               },
             ];
@@ -548,6 +571,7 @@ export class CreditService {
           cabinetId: resolvedLines.head.cabinetId,
           weightG: D(resolvedLines.totalWeightG),
           quantity: resolvedLines.totalQuantity,
+          patternFee: D(resolvedLines.totalPatternFee),
           sellPrice: D(nextSellPrice),
           downPayment: D(nextDownPayment),
           outstanding: D(outstanding),
@@ -565,6 +589,7 @@ export class CreditService {
           cabinetId: line.cabinetId,
           weightG: D(line.weightG),
           quantity: line.quantity,
+          patternFee: D(line.patternFee),
           sellPrice: D(line.sellPrice),
           sortOrder: index,
         })),

@@ -210,6 +210,42 @@ export class CreateHandoverDto {
   @IsOptional() @IsString() @MaxLength(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' }) note?: string;
 }
 
+export class UpdateHandoverDto {
+  /** ນ້ຳໜັກລວມອອກ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ / ແທ່ງ. */
+  @IsOptional()
+  @IsDecimalString({ labelLo: 'ນ້ຳໜັກລວມອອກ' })
+  outWeightG?: string;
+
+  /** ເນື້ອລ້ວນ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ. */
+  @IsOptional()
+  @IsDecimalString({ labelLo: 'ເນື້ອລ້ວນ' })
+  pureWeightG?: string;
+
+  /** ມີແກ້ວ — ສຳລັບ ຄຳດີ / ຄຳຫຍຸບ. */
+  @IsOptional()
+  @IsDecimalString({ labelLo: 'ນ້ຳໜັກມີແກ້ວ' })
+  glassWeightG?: string;
+
+  /** ລາຍການ Buyback ຄຳຕົ້ມ ທີ່ມອບໃນຮອບນີ້. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ຕ້ອງເລືອກລາຍການຄຳເກົ່າຢ່າງໜ້ອຍ 1 ລາຍການ' })
+  @IsString({ each: true })
+  buybackIds?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500, { message: 'ໝາຍເຫດຍາວເກີນ 500 ຕົວ' })
+  note?: string;
+}
+
+export class CancelHandoverDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300, { message: 'ເຫດຜົນຍາວເກີນ 300 ຕົວ' })
+  reason?: string;
+}
+
 export class UpdateStockMovementDto {
   @IsOptional() @IsString() partnerId?: string;
   @IsOptional() @IsString() goldTypeId?: string;

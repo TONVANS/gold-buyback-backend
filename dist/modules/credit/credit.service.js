@@ -210,6 +210,7 @@ let CreditService = class CreditService {
                     cabinetId: dto.cabinetId,
                     weightG: dto.weightG,
                     quantity: dto.quantity,
+                    patternFee: dto.patternFee,
                     sellPrice: dto.sellPrice,
                 },
             ];
@@ -232,6 +233,10 @@ let CreditService = class CreditService {
             if (!Number.isInteger(line.quantity) || line.quantity < 1) {
                 throw new common_1.BadRequestException('ຈຳນວນຕ້ອງຢ່າງໜ້ອຍ 1');
             }
+            const patternFee = (0, domain_1.dec)(line.patternFee ?? 0);
+            if (!patternFee.isFinite() || patternFee.isNegative()) {
+                throw new common_1.BadRequestException('ຄ່າລາຍຕ້ອງບໍ່ຕິດລົບ');
+            }
             const sellPrice = (0, domain_1.dec)(line.sellPrice);
             if (!sellPrice.isFinite() || sellPrice.lte(0)) {
                 throw new common_1.BadRequestException('ລາຄາຂາຍຕ້ອງໃຫຍ່ກວ່າ 0');
@@ -241,6 +246,7 @@ let CreditService = class CreditService {
                 cabinetId: line.cabinetId,
                 weightG,
                 quantity: line.quantity,
+                patternFee,
                 sellPrice,
             };
         });
@@ -264,12 +270,14 @@ let CreditService = class CreditService {
         }
         const totalWeightG = parsed.reduce((sum, l) => sum.plus(l.weightG.mul(l.quantity)), (0, domain_1.dec)(0));
         const totalQuantity = parsed.reduce((sum, l) => sum + l.quantity, 0);
+        const totalPatternFee = parsed.reduce((sum, l) => sum.plus(l.patternFee.mul(l.quantity)), (0, domain_1.dec)(0));
         const totalSellPrice = parsed.reduce((sum, l) => sum.plus(l.sellPrice), (0, domain_1.dec)(0));
         return {
             lines: parsed,
             head: parsed[0],
             totalWeightG,
             totalQuantity,
+            totalPatternFee,
             totalSellPrice,
         };
     }
@@ -315,6 +323,7 @@ let CreditService = class CreditService {
                     cabinetId: resolvedLines.head.cabinetId,
                     weightG: D(resolvedLines.totalWeightG),
                     quantity: resolvedLines.totalQuantity,
+                    patternFee: D(resolvedLines.totalPatternFee),
                     sellPrice: D(sellPrice),
                     downPayment: D(downPayment),
                     outstanding: D(outstanding),
@@ -326,6 +335,7 @@ let CreditService = class CreditService {
                             cabinetId: line.cabinetId,
                             weightG: D(line.weightG),
                             quantity: line.quantity,
+                            patternFee: D(line.patternFee),
                             sellPrice: D(line.sellPrice),
                             sortOrder: index,
                         })),
@@ -382,12 +392,16 @@ let CreditService = class CreditService {
             throw new common_1.ConflictException('ແກ້ໄຂໄດ້ສະເພາະລາຍການທີ່ລໍຖ້າອະນຸມັດ (PENDING)');
         }
         const nextPhone = dto.phone ?? existing.customer.phone;
+        const existingUnitPatternFee = existing.quantity > 0
+            ? (0, domain_1.dec)(existing.patternFee).div(existing.quantity).toFixed()
+            : '0';
         const rawNextLines = dto.lines?.length
             ? dto.lines
             : dto.goldItemId !== undefined ||
                 dto.cabinetId !== undefined ||
                 dto.weightG !== undefined ||
                 dto.quantity !== undefined ||
+                dto.patternFee !== undefined ||
                 dto.sellPrice !== undefined
                 ? [
                     {
@@ -395,6 +409,7 @@ let CreditService = class CreditService {
                         cabinetId: dto.cabinetId ?? existing.cabinetId ?? '',
                         weightG: dto.weightG ?? existing.weightG.toFixed(),
                         quantity: dto.quantity ?? existing.quantity,
+                        patternFee: dto.patternFee ?? existingUnitPatternFee,
                         sellPrice: dto.sellPrice ?? existing.sellPrice.toFixed(),
                     },
                 ]
@@ -404,6 +419,7 @@ let CreditService = class CreditService {
                         cabinetId: l.cabinetId ?? existing.cabinetId ?? '',
                         weightG: l.weightG.toFixed(),
                         quantity: l.quantity,
+                        patternFee: l.patternFee.toFixed(),
                         sellPrice: l.sellPrice.toFixed(),
                     }))
                     : [
@@ -412,6 +428,7 @@ let CreditService = class CreditService {
                             cabinetId: existing.cabinetId ?? '',
                             weightG: existing.weightG.toFixed(),
                             quantity: existing.quantity,
+                            patternFee: existingUnitPatternFee,
                             sellPrice: existing.sellPrice.toFixed(),
                         },
                     ];
@@ -456,6 +473,7 @@ let CreditService = class CreditService {
                     cabinetId: resolvedLines.head.cabinetId,
                     weightG: D(resolvedLines.totalWeightG),
                     quantity: resolvedLines.totalQuantity,
+                    patternFee: D(resolvedLines.totalPatternFee),
                     sellPrice: D(nextSellPrice),
                     downPayment: D(nextDownPayment),
                     outstanding: D(outstanding),
@@ -472,6 +490,7 @@ let CreditService = class CreditService {
                     cabinetId: line.cabinetId,
                     weightG: D(line.weightG),
                     quantity: line.quantity,
+                    patternFee: D(line.patternFee),
                     sellPrice: D(line.sellPrice),
                     sortOrder: index,
                 })),

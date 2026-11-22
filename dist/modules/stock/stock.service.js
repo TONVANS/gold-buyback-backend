@@ -757,6 +757,9 @@ let StockService = class StockService {
      *  ຕໍ່ຄັ້ງ ແລະ ບໍ່ໄລ່ເປັນຮອບ (ຕາມທີ່ລູກຄ້າແຈ້ງ).
      */
     async createHandover(dto, user, shiftId) {
+        if (dto.lines?.length && dto.buybackIds?.length) {
+            throw new common_1.BadRequestException('ບໍ່ສາມາດສົ່ງທັງ lines ແລະ buybackIds ພ້ອມກັນໄດ້');
+        }
         // ຮອບດຽວມອບ ຄຳດີ + ຄຳຫຍຸບ + ແທ່ງ ພ້ອມກັນໄດ້ (TOR §4.2 ຕາມແບບທີ່ລູກຄ້າໃຫ້).
         if (dto.lines?.length)
             return this.createHandoverRound(dto, user, shiftId);
@@ -786,45 +789,8 @@ let StockService = class StockService {
         }
         const day = await this.businessDay.current();
         // ── ຄຳຕົ້ມ: ນ້ຳໜັກມາຈາກລາຍການທີ່ເລືອກ, ບໍ່ແມ່ນຈາກຊ່ອງປ້ອນ
-        let items = [];
-        let weightG;
-        {
-            const ids = [...new Set(dto.buybackIds ?? [])];
-            if (ids.length === 0) {
-                throw new common_1.BadRequestException('ຄຳຕົ້ມ ຕ້ອງເລືອກລາຍການຄຳເກົ່າທີ່ຮັບຊື້ຄືນ');
-            }
-            const rows = await this.prisma.buyback.findMany({
-                where: {
-                    id: { in: ids },
-                    deletedAt: null,
-                    status: 'COMPLETED',
-                    goldTypeId: goldType.id,
-                    handoverItem: null,
-                },
-                select: {
-                    id: true, weightG: true, quantity: true,
-                    goldPercent: true, payableAmount: true,
-                },
-            });
-            if (rows.length !== ids.length) {
-                throw new common_1.BadRequestException('ມີລາຍການທີ່ມອບແລ້ວ ຫຼື ບໍ່ຢູ່ໃນເງື່ອນໄຂ — ກະລຸນາໂຫຼດລາຍການຄືນ');
-            }
-            items = rows.map((r) => ({
-                buybackId: r.id,
-                weightG: r.weightG,
-                quantity: r.quantity,
-                goldPercent: r.goldPercent,
-                payableAmount: r.payableAmount,
-            }));
-            /*
-             * `Buyback.weightG` ເປັນ "ຍອດລວມຂອງບິນ" ຢູ່ແລ້ວ (Σ ນ້ຳໜັກ × ຈຳນວນ
-             * ຂອງທຸກແຖວ) ຕັ້ງແຕ່ບິນດຽວມີຫຼາຍແຖວໄດ້ — ຄູນດ້ວຍ `quantity` ຂອງຫົວບິນ
-             * ອີກເທື່ອ ຈະນັບສອງເທື່ອ.
-             */
-            weightG = rows.reduce((sum, r) => sum.plus(toDec(r.weightG)), (0, domain_1.dec)(0));
-        }
-        // ຕົ້ນທຶນເຂົ້າສາງ ຂອງ ຄຳຕົ້ມ = ລາຄາທີ່ຈ່າຍຂອງລາຍການທີ່ເລືອກ (ບໍ່ແມ່ນສະເລ່ຍ).
-        const warehouseCost = items.reduce((sum, i) => sum.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0));
+        const ids = [...new Set(dto.buybackIds ?? [])];
+        const { items, weightG, warehouseCost } = await this.buildBoiledHandoverItems(this.prisma, goldType.id, ids);
         const handover = await this.prisma.$transaction(async (tx) => 
         // ຄຳຕົ້ມ ບໍ່ໄລ່ເປັນຮອບ => roundNo ປະໄວ້ null.
         tx.goldHandover.create({
@@ -853,40 +819,272 @@ let StockService = class StockService {
         });
         return handover;
     }
-    /**
-     * ສະເລ່ຍ ກີບ/g ທີ່ຮັບມາຈາກຜູ້ປະເມີນໃນມື້ການຄ້ານີ້ ແຍກຕາມປະເພດຄຳ.
-     *
-     * ອ່ານຈາກ `buyback_lines` ບ່ອນດຽວ ຄືກັນກັບຕາຕະລາງສະຫຼຸບ ສະນັ້ນ ຕົ້ນທຶນ
-     * ເຂົ້າສາງ ກັບ ສະເລ່ຍ/g ທີ່ສະແດງຢູ່ໜ້າຈໍ ຈຶ່ງມາຈາກຕົວເລກຊຸດດຽວກັນ.
-     */
-    async receivedAverageByType() {
-        const from = business_day_service_1.BusinessDayService.localMidnight();
-        const to = new Date(from);
-        to.setDate(to.getDate() + 1);
-        const lines = await this.prisma.buybackLine.findMany({
-            where: {
-                buyback: { deletedAt: null, status: 'COMPLETED', createdAt: { gte: from, lt: to } },
-            },
-            select: { goldTypeId: true, weightG: true, quantity: true, payableAmount: true },
-        });
-        const weight = new Map();
-        const paid = new Map();
-        for (const line of lines) {
-            const w = toDec(line.weightG).mul(line.quantity);
-            weight.set(line.goldTypeId, (weight.get(line.goldTypeId) ?? (0, domain_1.dec)(0)).plus(w));
-            paid.set(line.goldTypeId, (paid.get(line.goldTypeId) ?? (0, domain_1.dec)(0)).plus(toDec(line.payableAmount)));
-        }
-        const average = new Map();
-        for (const [goldTypeId, w] of weight) {
-            if (w.gt(0))
-                average.set(goldTypeId, (paid.get(goldTypeId) ?? (0, domain_1.dec)(0)).div(w));
-        }
-        return average;
+    /** ຍອດເງິນທີ່ຈ່າຍຈິງໃຫ້ລູກຄ້າ (ກີບ) ຂອງບິນ Buyback. */
+    actualBuybackPaid(buyback) {
+        const netPayments = buyback.payments.reduce((sum, p) => sum.plus(toDec(p.amountLak).minus(toDec(p.changeLak))), (0, domain_1.dec)(0));
+        const rawPaid = buyback.payments.length > 0 ? netPayments : toDec(buyback.paidAmount);
+        return rawPaid.gt(0) ? rawPaid : (0, domain_1.dec)(0);
     }
-    /** ຕົ້ນທຶນເຂົ້າສາງ ຂອງນ້ຳໜັກກ້ອນໜຶ່ງ. ຍັງບໍ່ມີການຮັບຊື້ໃນມື້ => null. */
-    async warehouseCostFor(goldTypeId, weightG) {
-        const average = (await this.receivedAverageByType()).get(goldTypeId);
-        return average ? weightG.mul(average) : null;
+    /**
+     * ກວດ ແລະ ກຽມລາຍການ Buyback ຄຳຕົ້ມ ສຳລັບການສ້າງ ຫຼື ແກ້ໄຂໃບມອບຄຳ.
+     */
+    async buildBoiledHandoverItems(client, goldTypeId, rawIds, currentHandoverId) {
+        const ids = [...new Set(rawIds)];
+        if (ids.length === 0) {
+            throw new common_1.BadRequestException('ຄຳຕົ້ມ ຕ້ອງເລືອກລາຍການຄຳເກົ່າທີ່ຮັບຊື້ຄືນ');
+        }
+        const rows = await client.buyback.findMany({
+            where: {
+                id: { in: ids },
+                deletedAt: null,
+                status: 'COMPLETED',
+                AND: [
+                    { OR: [{ goldTypeId }, { lines: { some: { goldTypeId } } }] },
+                    currentHandoverId
+                        ? { OR: [{ handoverItem: null }, { handoverItem: { handoverId: currentHandoverId } }] }
+                        : { handoverItem: null },
+                ],
+            },
+            select: {
+                id: true,
+                weightG: true,
+                quantity: true,
+                goldPercent: true,
+                paidAmount: true,
+                payments: { select: { amountLak: true, changeLak: true } },
+            },
+        });
+        if (rows.length !== ids.length) {
+            throw new common_1.BadRequestException('ມີລາຍການທີ່ມອບແລ້ວ ຫຼື ບໍ່ຢູ່ໃນເງື່ອນໄຂ — ກະລຸນາໂຫຼດລາຍການຄືນ');
+        }
+        const items = rows.map((r) => ({
+            buybackId: r.id,
+            weightG: r.weightG,
+            quantity: r.quantity,
+            goldPercent: r.goldPercent,
+            payableAmount: D(this.actualBuybackPaid(r)),
+        }));
+        const weightG = rows.reduce((sum, r) => sum.plus(toDec(r.weightG)), (0, domain_1.dec)(0));
+        const warehouseCost = items.reduce((sum, i) => sum.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0));
+        return { items, weightG, warehouseCost };
+    }
+    /** ກວດສອບ ແລະ ຄຳນວນຕົວເລກຂອງແຖວມອບຄຳແບບຮອບ (ຄຳດີ / ຄຳຫຍຸບ / ແທ່ງ). */
+    parseHandoverRoundLine(goldType, input, costFor) {
+        if (goldType.code === 'BOILED') {
+            throw new common_1.BadRequestException('ຄຳຕົ້ມ ມອບເປັນລາຍການ ບໍ່ແມ່ນເປັນຮອບ');
+        }
+        const out = (0, domain_1.dec)(input.outWeightG);
+        if (!out.isFinite() || out.lte(0)) {
+            throw new common_1.BadRequestException(`${goldType.nameLo}: ນ້ຳໜັກລວມອອກຕ້ອງໃຫຍ່ກວ່າ 0`);
+        }
+        // ຄຳແທ່ງ (BAR) ບໍ່ແຍກ ເນື້ອລ້ວນ / ມີແກ້ວ; ປະເພດອື່ນ (ຄຳດີ / ຄຳຫຍຸບ) ຕ້ອງປ້ອນຄົບ.
+        const split = goldType.code !== 'BAR';
+        if (!split) {
+            return {
+                goldType,
+                out,
+                pure: null,
+                glass: null,
+                shortfall: null,
+                cost: costFor(goldType.id, out),
+            };
+        }
+        if (input.pureWeightG === undefined || input.glassWeightG === undefined) {
+            throw new common_1.BadRequestException(`${goldType.nameLo}: ຕ້ອງປ້ອນ ເນື້ອລ້ວນ ແລະ ມີແກ້ວ`);
+        }
+        const pure = (0, domain_1.dec)(input.pureWeightG);
+        const glass = (0, domain_1.dec)(input.glassWeightG);
+        if (!pure.isFinite() || pure.isNegative() || !glass.isFinite() || glass.isNegative()) {
+            throw new common_1.BadRequestException(`${goldType.nameLo}: ເນື້ອລ້ວນ ແລະ ມີແກ້ວ ຕ້ອງບໍ່ຕິດລົບ`);
+        }
+        if (pure.plus(glass).lt(out)) {
+            throw new common_1.BadRequestException(`${goldType.nameLo}: ເນື້ອລ້ວນ + ມີແກ້ວ (${pure.plus(glass).toFixed()} g) ນ້ອຍກວ່ານ້ຳໜັກລວມອອກ (${out.toFixed()} g)`);
+        }
+        return {
+            goldType,
+            out,
+            pure,
+            glass,
+            shortfall: out.minus(pure).minus(glass),
+            cost: costFor(goldType.id, out),
+        };
+    }
+    /**
+     * ຍອດຄຳເກົ່າ ແລະ ເງິນທີ່ຈ່າຍຈິງໃຫ້ລູກຄ້າໃນມື້ການຄ້ານີ້ ແຍກຕາມປະເພດຄຳ.
+     *
+     * ອ່ານຈາກ Buyback (ທີ່ COMPLETED ຕາມ `confirmedAt`) ແລະ GoldExchange (ທີ່ APPROVED/COMPLETED
+     * ຕາມ `approvedAt`) ບ່ອນດຽວ ສຳລັບທັງຕາຕະລາງສະຫຼຸບ ແລະ ການຄິດຕົ້ນທຶນມອບເຂົ້າສາງ.
+     */
+    async loadTodayReceivedByType() {
+        const businessDate = business_day_service_1.BusinessDayService.localMidnight();
+        const tomorrow = new Date(businessDate);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const [buybacks, exchanges] = await Promise.all([
+            this.prisma.buyback.findMany({
+                where: {
+                    deletedAt: null,
+                    status: 'COMPLETED',
+                    OR: [
+                        { confirmedAt: { gte: businessDate, lt: tomorrow } },
+                        { confirmedAt: null, createdAt: { gte: businessDate, lt: tomorrow } },
+                    ],
+                },
+                select: {
+                    goldTypeId: true,
+                    weightG: true,
+                    quantity: true,
+                    payableAmount: true,
+                    paidAmount: true,
+                    lines: {
+                        select: { goldTypeId: true, weightG: true, quantity: true, payableAmount: true },
+                    },
+                    payments: { select: { amountLak: true, changeLak: true } },
+                },
+            }),
+            this.prisma.goldExchange.findMany({
+                where: {
+                    deletedAt: null,
+                    status: { in: ['APPROVED', 'COMPLETED'] },
+                    OR: [
+                        { approvedAt: { gte: businessDate, lt: tomorrow } },
+                        { approvedAt: null, createdAt: { gte: businessDate, lt: tomorrow } },
+                    ],
+                },
+                select: {
+                    totalPayable: true,
+                    paidAmount: true,
+                    oldLines: {
+                        select: { goldTypeId: true, weightG: true, quantity: true },
+                    },
+                    newLines: { select: { weightG: true, quantity: true } },
+                    payments: { select: { amountLak: true, changeLak: true } },
+                },
+            }),
+        ]);
+        const byType = new Map();
+        const ensure = (goldTypeId) => {
+            let entry = byType.get(goldTypeId);
+            if (!entry) {
+                entry = { receivedG: (0, domain_1.dec)(0), receivedPaid: (0, domain_1.dec)(0), newWeightG: (0, domain_1.dec)(0), quantity: 0 };
+                byType.set(goldTypeId, entry);
+            }
+            return entry;
+        };
+        for (const buyback of buybacks) {
+            const actualPaid = this.actualBuybackPaid(buyback);
+            const lines = buyback.lines.length > 0
+                ? buyback.lines.map((l) => ({
+                    goldTypeId: l.goldTypeId,
+                    weightG: toDec(l.weightG).mul(l.quantity),
+                    quantity: l.quantity,
+                    payableAmount: toDec(l.payableAmount),
+                }))
+                : [
+                    {
+                        goldTypeId: buyback.goldTypeId,
+                        weightG: toDec(buyback.weightG),
+                        quantity: buyback.quantity,
+                        payableAmount: toDec(buyback.payableAmount),
+                    },
+                ];
+            const totalPayable = lines.reduce((sum, l) => sum.plus(l.payableAmount), (0, domain_1.dec)(0));
+            const totalWeight = lines.reduce((sum, l) => sum.plus(l.weightG), (0, domain_1.dec)(0));
+            for (const line of lines) {
+                const entry = ensure(line.goldTypeId);
+                entry.receivedG = entry.receivedG.plus(line.weightG);
+                entry.quantity += line.quantity;
+                const paidShare = totalPayable.gt(0)
+                    ? actualPaid.mul(line.payableAmount).div(totalPayable)
+                    : totalWeight.gt(0)
+                        ? actualPaid.mul(line.weightG).div(totalWeight)
+                        : (0, domain_1.dec)(0);
+                entry.receivedPaid = entry.receivedPaid.plus(paidShare);
+            }
+        }
+        for (const exchange of exchanges) {
+            const oldTotal = exchange.oldLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
+            if (oldTotal.lte(0))
+                continue;
+            const newTotal = exchange.newLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
+            // ນ້ຳໜັກຄຳເກົ່າສຸດທິຈາກການປ່ຽນ = ຄຳເກົ່າ − ຄຳໃໝ່ທີ່ລູກຄ້ານຳໄປ (ບໍ່ຕິດລົບ).
+            const netExchangeWeight = oldTotal.gt(newTotal) ? oldTotal.minus(newTotal) : (0, domain_1.dec)(0);
+            // ຖ້າ totalPayable <= 0 ແປວ່າລູກຄ້າຈ່າຍຄ່າທຳນຽມໃຫ້ຮ້ານ (ຮ້ານບໍ່ໄດ້ຈ່າຍເງິນໃຫ້ລູກຄ້າ = 0).
+            let actualPaid = (0, domain_1.dec)(0);
+            if (toDec(exchange.totalPayable).gt(0)) {
+                const netPayments = exchange.payments.reduce((sum, p) => sum.plus(toDec(p.amountLak).minus(toDec(p.changeLak))), (0, domain_1.dec)(0));
+                const rawPaid = exchange.payments.length > 0 ? netPayments : toDec(exchange.paidAmount);
+                if (rawPaid.gt(0))
+                    actualPaid = rawPaid;
+            }
+            for (const line of exchange.oldLines) {
+                const w = toDec(line.weightG).mul(line.quantity);
+                const ratio = w.div(oldTotal);
+                const entry = ensure(line.goldTypeId);
+                entry.receivedG = entry.receivedG.plus(ratio.mul(netExchangeWeight));
+                if (netExchangeWeight.gt(0))
+                    entry.quantity += line.quantity;
+                entry.newWeightG = entry.newWeightG.plus(ratio.mul(newTotal));
+                entry.receivedPaid = entry.receivedPaid.plus(ratio.mul(actualPaid));
+            }
+        }
+        return byType;
+    }
+    /**
+     * ຄຳນວນຕົ້ນທຶນເຂົ້າສາງ ຈາກຍອດຄົງເຫຼືອຫຼັງມອບໃນມື້ (ຕົ້ນທຶນຄົງເຫຼືອ ÷ ນ້ຳໜັກຄົງເຫຼືອ)
+     * ເພື່ອໃຫ້ເມື່ອມອບຄົບຍອດຄົງເຫຼືອ ຕົ້ນທຶນຄົງເຫຼືອຈະເປັນ 0 ພໍດີ (ບໍ່ເຄື່ອນຈາກການປັດເສດ
+     * ຫຼື ບິນໃໝ່ທີ່ເພີ່ມເຂົ້າລະຫວ່າງມື້).
+     */
+    async buildRoundCostResolver(excludeHandoverId) {
+        const businessDate = business_day_service_1.BusinessDayService.localMidnight();
+        const tomorrow = new Date(businessDate);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const [receivedByType, handovers] = await Promise.all([
+            this.loadTodayReceivedByType(),
+            this.prisma.goldHandover.findMany({
+                where: {
+                    deletedAt: null,
+                    status: { in: ['PENDING', 'APPROVED', 'COMPLETED'] },
+                    createdAt: { gte: businessDate, lt: tomorrow },
+                    ...(excludeHandoverId ? { id: { not: excludeHandoverId } } : {}),
+                },
+                select: {
+                    goldTypeId: true,
+                    weightG: true,
+                    warehouseCost: true,
+                    items: { select: { payableAmount: true } },
+                },
+            }),
+        ]);
+        const handedByType = new Map();
+        for (const h of handovers) {
+            const prev = handedByType.get(h.goldTypeId) ?? { weightG: (0, domain_1.dec)(0), cost: (0, domain_1.dec)(0) };
+            const hCost = h.warehouseCost !== null
+                ? toDec(h.warehouseCost)
+                : h.items.reduce((s, i) => s.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0));
+            handedByType.set(h.goldTypeId, {
+                weightG: prev.weightG.plus(toDec(h.weightG)),
+                cost: prev.cost.plus(hCost),
+            });
+        }
+        return (goldTypeId, outWeightG) => {
+            const entry = receivedByType.get(goldTypeId);
+            if (!entry)
+                return null;
+            const handed = handedByType.get(goldTypeId);
+            const remainingG = entry.receivedG.minus(handed?.weightG ?? (0, domain_1.dec)(0));
+            const remainingPaid = entry.receivedPaid.minus(handed?.cost ?? (0, domain_1.dec)(0));
+            const safeRemainingPaid = remainingPaid.gt(0) ? remainingPaid : (0, domain_1.dec)(0);
+            if (remainingG.gt(0)) {
+                // ມອບເທົ່າກັບຍອດຄົງເຫຼືອທັງໝົດ => ໃຊ້ຕົ້ນທຶນຄົງເຫຼືອໂດຍຕົງ ເພື່ອບໍ່ໃຫ້ເຫຼືອເສດ.
+                if (outWeightG.eq(remainingG))
+                    return safeRemainingPaid;
+                return outWeightG.mul(safeRemainingPaid.div(remainingG));
+            }
+            if (entry.receivedG.gt(0)) {
+                return outWeightG.mul(entry.receivedPaid.div(entry.receivedG));
+            }
+            return null;
+        };
     }
     /**
      * ມອບຄຳເປັນ "ຮອບ" — ຮອບດຽວມີໄດ້ຫຼາຍປະເພດຄຳ.
@@ -908,40 +1106,10 @@ let StockService = class StockService {
             throw new common_1.NotFoundException('ບໍ່ພົບປະເພດຄຳທີ່ເລືອກ');
         }
         const byId = new Map(goldTypes.map((t) => [t.id, t]));
-        const average = await this.receivedAverageByType();
+        const costFor = await this.buildRoundCostResolver();
         const prepared = lines.map((line) => {
             const goldType = byId.get(line.goldTypeId);
-            if (goldType.code === 'BOILED') {
-                throw new common_1.BadRequestException('ຄຳຕົ້ມ ມອບເປັນລາຍການ ບໍ່ແມ່ນເປັນຮອບ');
-            }
-            const out = (0, domain_1.dec)(line.outWeightG);
-            if (!out.isFinite() || out.lte(0)) {
-                throw new common_1.BadRequestException(`${goldType.nameLo}: ນ້ຳໜັກລວມອອກຕ້ອງໃຫຍ່ກວ່າ 0`);
-            }
-            const pure = (0, domain_1.dec)(line.pureWeightG ?? 0);
-            const glass = (0, domain_1.dec)(line.glassWeightG ?? 0);
-            if (!pure.isFinite() || pure.isNegative() || !glass.isFinite() || glass.isNegative()) {
-                throw new common_1.BadRequestException(`${goldType.nameLo}: ເນື້ອລ້ວນ ແລະ ມີແກ້ວ ຕ້ອງບໍ່ຕິດລົບ`);
-            }
-            /*
-             * ເນື້ອລ້ວນ + ມີແກ້ວ ຕ້ອງບໍ່ນ້ອຍກວ່າ ນ້ຳໜັກລວມອອກ (ຕາມແບບທີ່ລູກຄ້າໃຫ້):
-             * ຫຼາຍກວ່າໄດ້ ເພາະຊັ່ງແຍກສ່ວນມັກໄດ້ເກີນ, ແຕ່ນ້ອຍກວ່າແປວ່າຊັ່ງຕົກ.
-             * ສຳລັບ ຄຳແທ່ງ ບໍ່ແຍກເນື້ອລ້ວນ/ມີແກ້ວ ຈຶ່ງຂ້າມການກວດນີ້.
-             */
-            const split = pure.gt(0) || glass.gt(0);
-            if (split && pure.plus(glass).lt(out)) {
-                throw new common_1.BadRequestException(`${goldType.nameLo}: ເນື້ອລ້ວນ + ມີແກ້ວ (${pure.plus(glass).toFixed()} g) ນ້ອຍກວ່ານ້ຳໜັກລວມອອກ (${out.toFixed()} g)`);
-            }
-            const perGram = average.get(goldType.id);
-            return {
-                goldType,
-                out,
-                pure: split ? pure : null,
-                glass: split ? glass : null,
-                /** ຂາດດຸ = ນ້ຳໜັກລວມອອກ − (ເນື້ອລ້ວນ + ມີແກ້ວ) — ຄຳນວນຢູ່ server. */
-                shortfall: split ? out.minus(pure).minus(glass) : null,
-                cost: perGram ? out.mul(perGram) : null,
-            };
+            return this.parseHandoverRoundLine(goldType, line, costFor);
         });
         const day = await this.businessDay.current();
         const created = await this.prisma.$transaction(async (tx) => {
@@ -985,8 +1153,11 @@ let StockService = class StockService {
         });
         return { roundNo: created[0].roundNo, rows: created };
     }
-    /** Warehouse approves; the gold enters Stock (OLD) at zero added cost —
-     *  it was already paid for by the Buyback that brought it in. */
+    /**
+     * Warehouse approves; Exchange old gold waits for Payment handover and enters
+     * Stock (OLD) here (Buyback already posts on confirm, so only unposted
+     * Exchange old gold is added to avoid double-counting).
+     */
     async reviewHandover(id, dto, user) {
         const handover = await this.prisma.goldHandover.findFirst({
             where: { id, deletedAt: null },
@@ -1007,8 +1178,8 @@ let StockService = class StockService {
             if (dto.decision === 'REJECTED') {
                 await tx.goldHandoverItem.deleteMany({ where: { handoverId: id } });
             }
-            const updated = await tx.goldHandover.update({
-                where: { id },
+            const claim = await tx.goldHandover.updateMany({
+                where: { id, status: handover.status, deletedAt: null },
                 data: {
                     status: next,
                     approvedById: user.id,
@@ -1016,6 +1187,13 @@ let StockService = class StockService {
                     rejectReason: dto.decision === 'REJECTED' ? (dto.reason ?? null) : null,
                 },
             });
+            if (claim.count !== 1) {
+                throw new common_1.BadRequestException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            if (dto.decision === 'APPROVED') {
+                await this.postExchangeHandoverOldGold(tx, handover, day.id, user.id);
+            }
+            const updated = await tx.goldHandover.findUniqueOrThrow({ where: { id } });
             await this.audit.record({
                 actorId: user.id,
                 action: dto.decision === 'APPROVED' ? 'APPROVE' : 'REJECT',
@@ -1033,6 +1211,81 @@ let StockService = class StockService {
                 refId: id,
             }, tx);
             return updated;
+        });
+    }
+    /**
+     * Post unposted Exchange old gold for `handover.goldTypeId` into Stock (OLD)
+     * when Warehouse approves Payment's handover.
+     */
+    async postExchangeHandoverOldGold(tx, handover, businessDayId, actorId) {
+        const exchangeRows = await tx.goldExchange.findMany({
+            where: {
+                deletedAt: null,
+                status: { in: ['APPROVED', 'COMPLETED'] },
+                oldLines: { some: { goldTypeId: handover.goldTypeId } },
+            },
+            select: {
+                code: true,
+                oldLines: {
+                    where: { goldTypeId: handover.goldTypeId },
+                    select: { weightG: true, quantity: true, shopBuybackPrice: true },
+                },
+            },
+        });
+        if (exchangeRows.length === 0)
+            return;
+        const exchangeLabels = exchangeRows.map((e) => `Exchange ${e.code}`);
+        const legacyPosted = await tx.stockOldLedger.findMany({
+            where: {
+                goldTypeId: handover.goldTypeId,
+                deletedAt: null,
+                typeLabel: { in: exchangeLabels },
+            },
+            select: { typeLabel: true },
+        });
+        const legacySet = new Set(legacyPosted.map((r) => r.typeLabel));
+        let unhandedExchangeWeight = (0, domain_1.dec)(0);
+        let unhandedExchangeCost = (0, domain_1.dec)(0);
+        for (const ex of exchangeRows) {
+            if (legacySet.has(`Exchange ${ex.code}`))
+                continue;
+            for (const line of ex.oldLines) {
+                unhandedExchangeWeight = unhandedExchangeWeight.plus(toDec(line.weightG).mul(line.quantity));
+                unhandedExchangeCost = unhandedExchangeCost.plus(toDec(line.shopBuybackPrice));
+            }
+        }
+        if (unhandedExchangeWeight.lte(0))
+            return;
+        const handoverPostedAgg = await tx.stockOldLedger.aggregate({
+            where: {
+                goldTypeId: handover.goldTypeId,
+                deletedAt: null,
+                typeLabel: { startsWith: 'Handover ' },
+            },
+            _sum: { goldInG: true, priceIn: true },
+        });
+        const remainingExchangeWeight = unhandedExchangeWeight.minus(toDec(handoverPostedAgg._sum.goldInG));
+        if (remainingExchangeWeight.lte(0))
+            return;
+        const remainingExchangeCost = unhandedExchangeCost.minus(toDec(handoverPostedAgg._sum.priceIn));
+        const handoverWeight = toDec(handover.weightG);
+        const postWeight = handoverWeight.lt(remainingExchangeWeight)
+            ? handoverWeight
+            : remainingExchangeWeight;
+        if (postWeight.lte(0))
+            return;
+        const safeRemainingCost = remainingExchangeCost.gt(0) ? remainingExchangeCost : (0, domain_1.dec)(0);
+        const postCost = postWeight.gte(remainingExchangeWeight)
+            ? safeRemainingCost
+            : safeRemainingCost.mul(postWeight).div(remainingExchangeWeight);
+        await this.stockLedger.postOld(tx, {
+            goldTypeId: handover.goldTypeId,
+            businessDayId,
+            goldInG: postWeight,
+            priceIn: postCost,
+            partnerLabel: 'Cashier',
+            typeLabel: `Handover ${handover.code}`,
+            createdById: actorId,
         });
     }
     /* ---------------------------------------------------------------- *
@@ -1313,37 +1566,12 @@ let StockService = class StockService {
         const businessDate = business_day_service_1.BusinessDayService.localMidnight();
         const tomorrow = new Date(businessDate);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        const [goldTypes, buybacks, exchanges, handovers] = await Promise.all([
+        const [goldTypes, receivedByType, handovers] = await Promise.all([
             this.prisma.goldType.findMany({
                 where: { isStockType: true, deletedAt: null },
                 orderBy: { sortOrder: 'asc' },
             }),
-            /*
-             * ອ່ານເປັນ "ແຖວລາຍການ" ບໍ່ແມ່ນ "ບິນ": ບິນດຽວມີຫຼາຍປະເພດຄຳໄດ້ ແລະ
-             * ສະຫຼຸບນີ້ແຍກຕາມປະເພດຄຳ. ບິນເກົ່າກ່ອນມີຕາຕະລາງແຖວ ຖືກຍ້າຍເຂົ້າ
-             * `buyback_lines` ຕອນ migrate ແລ້ວ ຈຶ່ງອ່ານບ່ອນດຽວໄດ້ໝົດ.
-             */
-            this.prisma.buybackLine.findMany({
-                where: {
-                    buyback: {
-                        deletedAt: null,
-                        status: 'COMPLETED',
-                        createdAt: { gte: businessDate, lt: tomorrow },
-                    },
-                },
-                select: { goldTypeId: true, weightG: true, quantity: true, payableAmount: true },
-            }),
-            this.prisma.goldExchange.findMany({
-                where: {
-                    deletedAt: null,
-                    status: { in: ['APPROVED', 'COMPLETED'] },
-                    createdAt: { gte: businessDate, lt: tomorrow },
-                },
-                select: {
-                    oldLines: { select: { goldTypeId: true, weightG: true, quantity: true } },
-                    newLines: { select: { weightG: true, quantity: true } },
-                },
-            }),
+            this.loadTodayReceivedByType(),
             // ມອບແລ້ວ = ສິ່ງທີ່ອອກຈາກມືຜູ້ປະເມີນເຂົ້າສາງ. ນັບແຖວທີ່ຍັງບໍ່ຖືກ
             // ປະຕິເສດ: ລໍຖ້າສາງຮັບ ກໍຖືວ່າ ຄຳບໍ່ຢູ່ກັບຜູ້ປະເມີນອີກແລ້ວ.
             this.prisma.goldHandover.findMany({
@@ -1352,33 +1580,27 @@ let StockService = class StockService {
                     status: { in: ['PENDING', 'APPROVED', 'COMPLETED'] },
                     createdAt: { gte: businessDate, lt: tomorrow },
                 },
-                select: { goldTypeId: true, weightG: true, items: { select: { payableAmount: true } } },
+                select: {
+                    goldTypeId: true,
+                    weightG: true,
+                    warehouseCost: true,
+                    items: { select: { payableAmount: true } },
+                },
             }),
         ]);
-        // New-gold weight is not attributable to one ປະເພດຄຳ, so it is spread
-        // across the old lines of the same exchange in proportion to their weight.
-        const newWeightByType = new Map();
-        for (const exchange of exchanges) {
-            const oldTotal = exchange.oldLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
-            if (oldTotal.lte(0))
-                continue;
-            const newTotal = exchange.newLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
-            for (const line of exchange.oldLines) {
-                const share = toDec(line.weightG).mul(line.quantity).div(oldTotal).mul(newTotal);
-                newWeightByType.set(line.goldTypeId, (newWeightByType.get(line.goldTypeId) ?? (0, domain_1.dec)(0)).plus(share));
-            }
-        }
         return goldTypes.map((goldType) => {
-            const rows = buybacks.filter((b) => b.goldTypeId === goldType.id);
-            const receivedG = rows.reduce((sum, r) => sum.plus(toDec(r.weightG).mul(r.quantity)), (0, domain_1.dec)(0));
-            const quantity = rows.reduce((sum, r) => sum + r.quantity, 0);
-            const receivedPaid = rows.reduce((sum, r) => sum.plus(toDec(r.payableAmount)), (0, domain_1.dec)(0));
-            const newWeightG = newWeightByType.get(goldType.id) ?? (0, domain_1.dec)(0);
+            const entry = receivedByType.get(goldType.id);
+            const receivedG = entry?.receivedG ?? (0, domain_1.dec)(0);
+            const quantity = entry?.quantity ?? 0;
+            const receivedPaid = entry?.receivedPaid ?? (0, domain_1.dec)(0);
+            const newWeightG = entry?.newWeightG ?? (0, domain_1.dec)(0);
             // ມອບແລ້ວ ຂອງປະເພດຄຳນີ້ — ແລະ ສຳລັບ ຄຳຕົ້ມ ຍັງຮູ້ວ່າເງິນເທົ່າໃດອອກໄປ
             // ພ້ອມກັບລາຍການນັ້ນ, ເພາະມອບເປັນລາຍການ ບໍ່ແມ່ນເປັນນ້ຳໜັກກ້ອນ.
             const mine = handovers.filter((h) => h.goldTypeId === goldType.id);
             const handedG = mine.reduce((sum, h) => sum.plus(toDec(h.weightG)), (0, domain_1.dec)(0));
-            const handedPaid = mine.reduce((sum, h) => sum.plus(h.items.reduce((s, i) => s.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0))), (0, domain_1.dec)(0));
+            const handedPaid = mine.reduce((sum, h) => sum.plus(h.warehouseCost !== null
+                ? toDec(h.warehouseCost)
+                : h.items.reduce((s, i) => s.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0))), (0, domain_1.dec)(0));
             /*
              * ຄົງເຫຼືອ = ຮັບຈາກຜູ້ປະເມີນ − ມອບເຂົ້າສາງ (TOR §4.2).
              *
@@ -1389,17 +1611,14 @@ let StockService = class StockService {
             const remainingG = receivedG.minus(handedG);
             const shownRemainingG = remainingG.isNegative() ? (0, domain_1.dec)(0) : remainingG;
             /*
-             * ເງິນທີ່ຈ່າຍຄົງເຫຼືອ = ເງິນທີ່ຈ່າຍທັງໝົດ (ສູດໃນຊີດຂອງລູກຄ້າ: L6 = E6).
-             *
-             * ການມອບເຂົ້າສາງ ຍ້າຍ "ນ້ຳໜັກ" ເທົ່ານັ້ນ ບໍ່ແມ່ນ "ເງິນ" — ເງິນຈ່າຍອອກ
-             * ໄປແລ້ວຕອນຮັບຊື້ຄືນ. ສະນັ້ນ ສະເລ່ຍ/g ຂອງຕາຕະລາງ 2 ຈຶ່ງສູງຂຶ້ນເມື່ອມອບ
-             * ຫຼາຍ — ເປັນຕາມທີ່ລູກຄ້າຕ້ອງການ ແລະ ອະທິບາຍໄວ້ໃນກ່ອງ "ວິທີຄິດໄລ່".
+             * ຕົ້ນທຶນຄົງເຫຼືອ = ຕົ້ນທຶນທີ່ຈ່າຍຈິງໃຫ້ລູກຄ້າ − ຕົ້ນທຶນເຂົ້າສາງ.
+             * ບໍ່ປ່ອຍໃຫ້ຕິດລົບເມື່ອມອບຄຳຕົກຄ້າງຈາກມື້ກ່ອນ.
              */
-            const remainingPaid = receivedPaid;
-            // ສູດຂອງແບບນີ້ແມ່ນ ເງິນ ÷ ນ້ຳໜັກ ກົງໆ (ບໍ່ຫັກນ້ຳໜັກຄຳໃໝ່) —
-            // ສົ່ງ 0 ເປັນນ້ຳໜັກຄຳໃໝ່ ເພື່ອໃຊ້ການຈັດການ "—" ຂອງ helper ດຽວກັນ.
+            const remainingPaid = receivedPaid.minus(handedPaid);
+            const shownRemainingPaid = remainingPaid.isNegative() ? (0, domain_1.dec)(0) : remainingPaid;
+            // receivedG ຫັກນ້ຳໜັກຄຳໃໝ່ຈາກການປ່ຽນອອກແລ້ວ — ຈຶ່ງຫານດ້ວຍ receivedG ກົງໆ.
             const receivedAverage = (0, domain_1.goldTypeAverage)(receivedPaid, receivedG, (0, domain_1.dec)(0), true);
-            const average = (0, domain_1.goldTypeAverage)(remainingPaid, shownRemainingG, (0, domain_1.dec)(0), true);
+            const average = (0, domain_1.goldTypeAverage)(shownRemainingPaid, shownRemainingG, (0, domain_1.dec)(0), true);
             return {
                 goldTypeId: goldType.id,
                 goldTypeCode: goldType.code,
@@ -1410,12 +1629,13 @@ let StockService = class StockService {
                 receivedPaid: receivedPaid.toFixed(),
                 receivedAveragePerGram: receivedAverage.perGram ? receivedAverage.perGram.toFixed() : null,
                 receivedAveragePerBaht: receivedAverage.perBaht ? receivedAverage.perBaht.toFixed() : null,
+                receivedAverageMessageLo: receivedAverage.messageLo,
                 /** ຕາຕະລາງ 2 — ຫຼັງສົ່ງມອບເຂົ້າສາງແລ້ວ. */
                 handedG: handedG.toFixed(),
                 handedPaid: handedPaid.toFixed(),
                 weightG: shownRemainingG.toFixed(),
                 bahtWeight: (0, domain_1.gramsToBaht)(shownRemainingG).toFixed(),
-                totalPaid: remainingPaid.toFixed(),
+                totalPaid: shownRemainingPaid.toFixed(),
                 averagePerGram: average.perGram ? average.perGram.toFixed() : null,
                 averagePerBaht: average.perBaht ? average.perBaht.toFixed() : null,
                 averageMessageLo: average.messageLo,
@@ -1486,22 +1706,228 @@ let StockService = class StockService {
             },
             select: {
                 id: true, code: true, weightG: true, quantity: true,
-                goldPercent: true, payableAmount: true, createdAt: true,
+                goldPercent: true, payableAmount: true, paidAmount: true, createdAt: true,
                 goldItem: { select: { nameLo: true } },
                 goldType: { select: { nameLo: true } },
                 customer: { select: { phone: true } },
+                payments: { select: { amountLak: true, changeLak: true } },
             },
             orderBy: { createdAt: 'asc' },
             take: 500,
         });
-        return rows.map((r) => ({
-            ...r,
-            weightG: r.weightG.toFixed(),
-            goldPercent: r.goldPercent ? r.goldPercent.toFixed() : null,
-            payableAmount: r.payableAmount.toFixed(),
-            /** ຄືກັນກັບ `weightG` — ຫົວບິນເກັບຍອດລວມຢູ່ແລ້ວ. ເກັບຊື່ໄວ້ໃຫ້ client ເກົ່າ. */
-            totalWeightG: toDec(r.weightG).toFixed(),
-        }));
+        return rows.map((r) => {
+            const actualPaid = this.actualBuybackPaid(r);
+            return {
+                id: r.id,
+                code: r.code,
+                weightG: r.weightG.toFixed(),
+                quantity: r.quantity,
+                goldPercent: r.goldPercent ? r.goldPercent.toFixed() : null,
+                payableAmount: actualPaid.toFixed(),
+                paidAmount: actualPaid.toFixed(),
+                totalWeightG: toDec(r.weightG).toFixed(),
+                createdAt: r.createdAt,
+                goldItem: r.goldItem,
+                goldType: r.goldType,
+                customer: r.customer,
+            };
+        });
+    }
+    /** ລາຍລະອຽດໃບມອບຄຳໜຶ່ງລາຍການ ພ້ອມລາຍການຄຳຕົ້ມ ແລະ ປະຫວັດ Audit. */
+    async getHandover(id) {
+        const handover = await this.prisma.goldHandover.findFirst({
+            where: { id, deletedAt: null },
+            include: {
+                goldType: true,
+                shift: { include: { user: { select: { id: true, fullName: true } } } },
+                items: {
+                    include: {
+                        buyback: {
+                            select: {
+                                id: true,
+                                code: true,
+                                weightG: true,
+                                quantity: true,
+                                goldPercent: true,
+                                payableAmount: true,
+                                goldItem: { select: { nameLo: true } },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        if (!handover)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການມອບຄຳ');
+        const [enriched] = await this.audit.withActorNames([handover]);
+        const audits = await this.prisma.auditLog.findMany({
+            where: { entity: 'GoldHandover', entityId: id },
+            include: { actor: { select: { fullName: true } } },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+        });
+        return { ...enriched, audits };
+    }
+    assertHandoverOwnerOrManager(createdById, user, messageLo) {
+        if (createdById !== user.id && !['ADMIN', 'MANAGER'].includes(user.role)) {
+            throw new common_1.ForbiddenException(messageLo);
+        }
+    }
+    /** ແກ້ໄຂໃບມອບຄຳ ຂະນະທີ່ຍັງລໍຖ້າສາງຢືນຢັນ (`PENDING`). */
+    async updateHandover(id, dto, user) {
+        const existing = await this.prisma.goldHandover.findFirst({
+            where: { id, deletedAt: null },
+            include: { goldType: true, items: true },
+        });
+        if (!existing)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການມອບຄຳ');
+        this.assertHandoverOwnerOrManager(existing.createdById, user, 'ມີພຽງຜູ້ສ້າງລາຍການ ຫຼື ຜູ້ຈັດການ ເທົ່ານັ້ນທີ່ແກ້ໄຂໄດ້');
+        if (existing.status !== 'PENDING') {
+            throw new common_1.ConflictException('ແກ້ໄຂໄດ້ສະເພາະລາຍການທີ່ລໍຖ້າສາງຢືນຢັນ (PENDING)');
+        }
+        if (existing.goldType.code === 'BOILED') {
+            const updated = await this.prisma.$transaction(async (tx) => {
+                let weightG = toDec(existing.weightG);
+                let warehouseCost = existing.warehouseCost ? toDec(existing.warehouseCost) : (0, domain_1.dec)(0);
+                if (dto.buybackIds) {
+                    const built = await this.buildBoiledHandoverItems(tx, existing.goldTypeId, dto.buybackIds, id);
+                    weightG = built.weightG;
+                    warehouseCost = built.warehouseCost;
+                    await tx.goldHandoverItem.deleteMany({ where: { handoverId: id } });
+                    await tx.goldHandoverItem.createMany({
+                        data: built.items.map((item) => ({ ...item, handoverId: id })),
+                    });
+                }
+                const claim = await tx.goldHandover.updateMany({
+                    where: { id, status: 'PENDING', deletedAt: null },
+                    data: {
+                        weightG: D(weightG),
+                        warehouseCost: D(warehouseCost),
+                        note: dto.note !== undefined ? (dto.note.trim() || null) : existing.note,
+                    },
+                });
+                if (claim.count !== 1) {
+                    throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+                }
+                await this.audit.record({
+                    actorId: user.id,
+                    action: 'UPDATE',
+                    entity: 'GoldHandover',
+                    entityId: id,
+                    before: { weightG: existing.weightG.toFixed(), itemCount: existing.items.length },
+                    after: { weightG: weightG.toFixed(), itemCount: dto.buybackIds?.length ?? existing.items.length },
+                    summary: `ແກ້ໄຂການມອບຄຳ ${existing.code}`,
+                }, tx);
+                return tx.goldHandover.findUniqueOrThrow({
+                    where: { id },
+                    include: { items: true, goldType: true },
+                });
+            });
+            return updated;
+        }
+        const costFor = await this.buildRoundCostResolver(id);
+        const parsed = this.parseHandoverRoundLine(existing.goldType, {
+            outWeightG: dto.outWeightG ?? existing.grossWeightG?.toFixed() ?? existing.weightG.toFixed(),
+            pureWeightG: dto.pureWeightG ?? (existing.pureWeightG !== null ? existing.pureWeightG.toFixed() : undefined),
+            glassWeightG: dto.glassWeightG ?? (existing.glassWeightG !== null ? existing.glassWeightG.toFixed() : undefined),
+        }, costFor);
+        return this.prisma.$transaction(async (tx) => {
+            const claim = await tx.goldHandover.updateMany({
+                where: { id, status: 'PENDING', deletedAt: null },
+                data: {
+                    weightG: D(parsed.out),
+                    grossWeightG: D(parsed.out),
+                    pureWeightG: parsed.pure ? D(parsed.pure) : null,
+                    glassWeightG: parsed.glass ? D(parsed.glass) : null,
+                    shortfallG: parsed.shortfall ? D(parsed.shortfall) : null,
+                    warehouseCost: parsed.cost ? D(parsed.cost) : existing.warehouseCost,
+                    note: dto.note !== undefined ? (dto.note.trim() || null) : existing.note,
+                },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            await this.audit.record({
+                actorId: user.id,
+                action: 'UPDATE',
+                entity: 'GoldHandover',
+                entityId: id,
+                before: { weightG: existing.weightG.toFixed() },
+                after: { weightG: parsed.out.toFixed() },
+                summary: `ແກ້ໄຂການມອບຄຳ ${existing.code}`,
+            }, tx);
+            return tx.goldHandover.findUniqueOrThrow({
+                where: { id },
+                include: { items: true, goldType: true },
+            });
+        });
+    }
+    /** ຍົກເລີກໃບມອບຄຳ ຂະນະທີ່ຍັງ `PENDING` — ຄືນລາຍການຄຳຕົ້ມເຂົ້າຄິວລໍຖ້າມອບ. */
+    async cancelHandover(id, dto, user) {
+        const handover = await this.prisma.goldHandover.findFirst({
+            where: { id, deletedAt: null },
+        });
+        if (!handover)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການມອບຄຳ');
+        this.assertHandoverOwnerOrManager(handover.createdById, user, 'ມີພຽງຜູ້ສ້າງລາຍການ ຫຼື ຜູ້ຈັດການ ເທົ່ານັ້ນທີ່ຍົກເລີກໄດ້');
+        if (handover.status !== 'PENDING') {
+            throw new common_1.ConflictException('ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງລໍຖ້າສາງຢືນຢັນ (PENDING)');
+        }
+        this.approval.assertTransition(handover.status, 'CANCELLED');
+        return this.prisma.$transaction(async (tx) => {
+            await tx.goldHandoverItem.deleteMany({ where: { handoverId: id } });
+            const claim = await tx.goldHandover.updateMany({
+                where: { id, status: 'PENDING', deletedAt: null },
+                data: {
+                    status: 'CANCELLED',
+                    rejectReason: dto.reason?.trim() || handover.rejectReason || null,
+                },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            await this.audit.record({
+                actorId: user.id,
+                action: 'UPDATE',
+                entity: 'GoldHandover',
+                entityId: id,
+                before: { status: handover.status },
+                after: { status: 'CANCELLED', reason: dto.reason ?? null },
+                summary: `ຍົກເລີກການມອບຄຳ ${handover.code}${dto.reason ? ` (${dto.reason})` : ''}`,
+            }, tx);
+            return tx.goldHandover.findUniqueOrThrow({ where: { id } });
+        });
+    }
+    /** Soft delete ໃບມອບຄຳ (`PENDING` / `REJECTED` / `CANCELLED` — ຫ້າມລຶບ `APPROVED`). */
+    async deleteHandover(id, user) {
+        const handover = await this.prisma.goldHandover.findFirst({
+            where: { id, deletedAt: null },
+        });
+        if (!handover)
+            throw new common_1.NotFoundException('ບໍ່ພົບລາຍການມອບຄຳ');
+        this.assertHandoverOwnerOrManager(handover.createdById, user, 'ມີພຽງຜູ້ສ້າງລາຍການ ຫຼື ຜູ້ຈັດການ ເທົ່ານັ້ນທີ່ລຶບໄດ້');
+        if (!['PENDING', 'REJECTED', 'CANCELLED'].includes(handover.status)) {
+            throw new common_1.ConflictException('ລຶບໄດ້ສະເພາະລາຍການທີ່ລໍຖ້າຢືນຢັນ, ຖືກປະຕິເສດ ຫຼື ຍົກເລີກ');
+        }
+        return this.prisma.$transaction(async (tx) => {
+            await tx.goldHandoverItem.deleteMany({ where: { handoverId: id } });
+            const claim = await tx.goldHandover.updateMany({
+                where: { id, status: handover.status, deletedAt: null },
+                data: { deletedAt: new Date() },
+            });
+            if (claim.count !== 1) {
+                throw new common_1.ConflictException('ສະຖານະລາຍການມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
+            }
+            await this.audit.record({
+                actorId: user.id,
+                action: 'DELETE',
+                entity: 'GoldHandover',
+                entityId: id,
+                before: { code: handover.code, status: handover.status },
+                summary: `ລຶບການມອບຄຳ ${handover.code}`,
+            }, tx);
+            return { id, deleted: true };
+        });
     }
     /* ---------------------------------------------------------------- *
      * Helpers

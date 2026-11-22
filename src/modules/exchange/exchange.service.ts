@@ -24,7 +24,6 @@ import { AuditService } from '../../common/services/audit.service';
 import { HistoryRangeService } from '../../common/services/history-range.service';
 import { ApprovalService } from '../../common/services/approval.service';
 import { BusinessDayService } from '../../common/services/business-day.service';
-import { StockLedgerService } from '../../common/services/stock-ledger.service';
 import { CashService } from '../cash/cash.service';
 import { FeesService } from '../fees/fees.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -80,7 +79,6 @@ export class ExchangeService {
     private readonly audit: AuditService,
     private readonly approval: ApprovalService,
     private readonly businessDay: BusinessDayService,
-    private readonly stockLedger: StockLedgerService,
     private readonly cash: CashService,
     private readonly fees: FeesService,
     private readonly notifications: NotificationsService,
@@ -619,7 +617,7 @@ export class ExchangeService {
   ) {
     const exchange = await this.prisma.goldExchange.findFirst({
       where: { id, deletedAt: null },
-      include: { oldLines: true, newLines: true, payments: true },
+      include: { payments: true },
     });
     if (!exchange) throw new NotFoundException('ບໍ່ພົບລາຍການ');
 
@@ -677,33 +675,8 @@ export class ExchangeService {
           payments: exchange.payments,
           actorId: user.id,
         });
-
-        // Old gold enters Stock (OLD) at what the shop valued it; the
-        // new pieces leave Stock (NEW) at WAC.
-        for (const line of exchange.oldLines) {
-          await this.stockLedger.postOld(tx, {
-            goldTypeId: line.goldTypeId,
-            businessDayId: day.id,
-            goldInG: dec(line.weightG.toFixed()).mul(line.quantity),
-            priceIn: dec(line.shopBuybackPrice.toFixed()),
-            partnerLabel: 'Cashier',
-            typeLabel: `Exchange ${exchange.code}`,
-            createdById: user.id,
-          });
-        }
-
-        const wac = await this.stockLedger.currentWac(tx);
-        for (const line of exchange.newLines) {
-          const goldG = dec(line.weightG.toFixed()).mul(line.quantity);
-          await this.stockLedger.postNew(tx, {
-            businessDayId: day.id,
-            goldOutG: goldG,
-            priceOut: goldG.mul(wac.pricePerG),
-            partnerLabel: 'Cashier',
-            typeLabel: `Exchange ${exchange.code}`,
-            createdById: user.id,
-          });
-        }
+        // Exchange transactions do not deduct Stock (NEW) and do not post directly
+        // into Stock (OLD); old gold enters Stock (OLD) when Payment hands it over.
       }
 
       const updated = await tx.goldExchange.findUniqueOrThrow({ where: { id } });

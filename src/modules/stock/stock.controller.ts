@@ -14,8 +14,10 @@ import {
 import type { ApprovalStatus, StockScope } from '@prisma/client';
 import { StockService } from './stock.service';
 import {
+  CancelHandoverDto,
   CreateHandoverDto,
   HandoverQueryDto,
+  UpdateHandoverDto,
   CreateStockInDto,
   CreateStockOutDto,
   CreateTransferDto,
@@ -226,6 +228,11 @@ export class StockController {
     return this.stock.pendingOldGoldItems(goldTypeId);
   }
 
+  @Get('handovers/:id')
+  getHandover(@Param('id') id: string) {
+    return this.stock.getHandover(id);
+  }
+
   @Roles('PAYMENT', 'ADMIN', 'MANAGER')
   @RequiresOpenShift()
   @Post('handovers')
@@ -237,6 +244,32 @@ export class StockController {
     const shiftId = req.shift?.id as string | undefined;
     if (!shiftId) throw new BadRequestException('ຕ້ອງເປີດກະກ່ອນມອບຄຳ');
     return this.stock.createHandover(dto, user, shiftId);
+  }
+
+  @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @Patch('handovers/:id')
+  updateHandover(
+    @Param('id') id: string,
+    @Body() dto: UpdateHandoverDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.stock.updateHandover(id, dto, user);
+  }
+
+  @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @Post('handovers/:id/cancel')
+  cancelHandover(
+    @Param('id') id: string,
+    @Body() dto: CancelHandoverDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.stock.cancelHandover(id, dto, user);
+  }
+
+  @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @Delete('handovers/:id')
+  deleteHandover(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.stock.deleteHandover(id, user);
   }
 
   @Roles('WAREHOUSE', 'ADMIN', 'MANAGER')

@@ -18,7 +18,6 @@ const audit_service_1 = require("../../common/services/audit.service");
 const history_range_service_1 = require("../../common/services/history-range.service");
 const approval_service_1 = require("../../common/services/approval.service");
 const business_day_service_1 = require("../../common/services/business-day.service");
-const stock_ledger_service_1 = require("../../common/services/stock-ledger.service");
 const cash_service_1 = require("../cash/cash.service");
 const fees_service_1 = require("../fees/fees.service");
 const notifications_service_1 = require("../notifications/notifications.service");
@@ -55,18 +54,16 @@ let ExchangeService = class ExchangeService {
     audit;
     approval;
     businessDay;
-    stockLedger;
     cash;
     fees;
     notifications;
     pricingContext;
     range;
-    constructor(prisma, audit, approval, businessDay, stockLedger, cash, fees, notifications, pricingContext, range) {
+    constructor(prisma, audit, approval, businessDay, cash, fees, notifications, pricingContext, range) {
         this.prisma = prisma;
         this.audit = audit;
         this.approval = approval;
         this.businessDay = businessDay;
-        this.stockLedger = stockLedger;
         this.cash = cash;
         this.fees = fees;
         this.notifications = notifications;
@@ -514,7 +511,7 @@ let ExchangeService = class ExchangeService {
     async review(id, dto, user, openShiftId) {
         const exchange = await this.prisma.goldExchange.findFirst({
             where: { id, deletedAt: null },
-            include: { oldLines: true, newLines: true, payments: true },
+            include: { payments: true },
         });
         if (!exchange)
             throw new common_1.NotFoundException('ບໍ່ພົບລາຍການ');
@@ -557,31 +554,8 @@ let ExchangeService = class ExchangeService {
                     payments: exchange.payments,
                     actorId: user.id,
                 });
-                // Old gold enters Stock (OLD) at what the shop valued it; the
-                // new pieces leave Stock (NEW) at WAC.
-                for (const line of exchange.oldLines) {
-                    await this.stockLedger.postOld(tx, {
-                        goldTypeId: line.goldTypeId,
-                        businessDayId: day.id,
-                        goldInG: (0, domain_1.dec)(line.weightG.toFixed()).mul(line.quantity),
-                        priceIn: (0, domain_1.dec)(line.shopBuybackPrice.toFixed()),
-                        partnerLabel: 'Cashier',
-                        typeLabel: `Exchange ${exchange.code}`,
-                        createdById: user.id,
-                    });
-                }
-                const wac = await this.stockLedger.currentWac(tx);
-                for (const line of exchange.newLines) {
-                    const goldG = (0, domain_1.dec)(line.weightG.toFixed()).mul(line.quantity);
-                    await this.stockLedger.postNew(tx, {
-                        businessDayId: day.id,
-                        goldOutG: goldG,
-                        priceOut: goldG.mul(wac.pricePerG),
-                        partnerLabel: 'Cashier',
-                        typeLabel: `Exchange ${exchange.code}`,
-                        createdById: user.id,
-                    });
-                }
+                // Exchange transactions do not deduct Stock (NEW) and do not post directly
+                // into Stock (OLD); old gold enters Stock (OLD) when Payment hands it over.
             }
             const updated = await tx.goldExchange.findUniqueOrThrow({ where: { id } });
             await this.audit.record({
@@ -1000,7 +974,6 @@ exports.ExchangeService = ExchangeService = __decorate([
         audit_service_1.AuditService,
         approval_service_1.ApprovalService,
         business_day_service_1.BusinessDayService,
-        stock_ledger_service_1.StockLedgerService,
         cash_service_1.CashService,
         fees_service_1.FeesService,
         notifications_service_1.NotificationsService,
