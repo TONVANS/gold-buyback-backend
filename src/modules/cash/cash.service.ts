@@ -25,6 +25,16 @@ import type {
 const D = (value: Decimal) => new Prisma.Decimal(value.toFixed());
 const CURRENCIES: Currency[] = ['LAK', 'THB', 'USD'];
 
+/** Counter transactions that settle inside a cashier shift wallet rather than directly against Module Cash. */
+const COUNTER_WALLET_REFS = ['Buyback', 'GoldExchange', 'GoldCredit'];
+const MODULE_CASH_SCOPE: Prisma.CashTransactionWhereInput = {
+  OR: [
+    { shiftId: null },
+    { refType: null },
+    { refType: { notIn: COUNTER_WALLET_REFS } },
+  ],
+};
+
 /** Signs for the four cash movement types (TOR §3.7). */
 const CASH_SIGN: Record<string, 1 | -1> = {
   IN: 1,
@@ -618,12 +628,12 @@ export class CashService {
     const [today, prior] = await Promise.all([
       this.prisma.cashTransaction.groupBy({
         by: ['currency', 'type'],
-        where: { deletedAt: null, businessDay: { date } },
+        where: { deletedAt: null, businessDay: { date }, ...MODULE_CASH_SCOPE },
         _sum: { amount: true },
       }),
       this.prisma.cashTransaction.groupBy({
         by: ['currency', 'type'],
-        where: { deletedAt: null, businessDay: { date: { lt: date } } },
+        where: { deletedAt: null, businessDay: { date: { lt: date } }, ...MODULE_CASH_SCOPE },
         _sum: { amount: true },
       }),
     ]);
@@ -693,10 +703,8 @@ export class CashService {
           // WITHDRAW from vault (shop OUT) = money INTO drawer (Inflow)
           // HANDOVER to vault (shop IN) = money OUT of drawer (Outflow)
           isDrawerInflow = row.type === 'OUT';
-        } else if (row.refType === 'GoldCredit') {
-          isDrawerInflow = true;
-        } else if (['Buyback', 'GoldExchange'].includes(row.refType ?? '')) {
-          // Payouts are 'OUT' (outflow from drawer); change returned or incoming fees are 'IN' (inflow).
+        } else if (['Buyback', 'GoldExchange', 'GoldCredit'].includes(row.refType ?? '')) {
+          // Payouts & change out are 'OUT' (outflow from drawer); receipts, change returned or incoming fees are 'IN' (inflow).
           isDrawerInflow = row.type === 'IN';
         } else if (row.refType === 'ShiftClose') {
           isDrawerInflow = false;
@@ -756,11 +764,199 @@ export class CashService {
     };
   }
 
+  private async findOpenCounterWalletShifts(
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
+  ) {
+    return client.shift.findMany({
+      where: {
+        status: 'OPEN',
+        closedAt: null,
+        OR: [
+          { user: { role: 'PAYMENT' } },
+          {
+            user: { role: { in: ['ADMIN', 'MANAGER'] } },
+            OR: [
+              { cashRequests: { some: { deletedAt: null } } },
+              {
+                cashTransactions: {
+                  some: {
+                    deletedAt: null,
+                    refType: { in: ['CashRequest', ...COUNTER_WALLET_REFS] },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      include: { user: { select: { id: true, role: true } } },
+      orderBy: { openedAt: 'desc' },
+    });
+  }
+
+  /**
+   * ຊອກຫາກະທີ່ຖືກະເປົ໋າເງິນສົດ (To Day) ສຳລັບການຈ່າຍ/ຮັບເງິນສົດໜ້າຮ້ານ:
+   * - PAYMENT ໃຊ້ກະຂອງຕົນເອງ
+   * - VALUER ຫຼື ຜູ້ອື່ນ ຈະອ້າງອີງກະຂອງຜູ້ອະນຸມັດ (Payment) ຫຼື ກະ Payment ທີ່ເປີດຢູ່
+   */
+  async resolveCounterCashShiftId(options: {
+    actor: AuthenticatedUser;
+    openShiftId?: string;
+    preferredUserId?: string;
+    client?: Prisma.TransactionClient | PrismaService;
+  }): Promise<string | undefined> {
+    const client = options.client ?? this.prisma;
+    const { actor, openShiftId, preferredUserId } = options;
+
+    if (actor.role === 'PAYMENT' && openShiftId) {
+      const own = await client.shift.findFirst({
+        where: { id: openShiftId, status: 'OPEN', closedAt: null },
+        select: { id: true },
+      });
+      if (own) return own.id;
+    }
+
+    if (preferredUserId) {
+      const prefShift = await client.shift.findFirst({
+        where: {
+          userId: preferredUserId,
+          status: 'OPEN',
+          closedAt: null,
+          user: { role: { not: 'VALUER' } },
+        },
+        orderBy: { openedAt: 'desc' },
+        select: { id: true },
+      });
+      if (prefShift) return prefShift.id;
+    }
+
+    const counterShifts = await this.findOpenCounterWalletShifts(client);
+
+    if (openShiftId && actor.role !== 'VALUER') {
+      const match = counterShifts.find((s) => s.id === openShiftId);
+      if (match) return match.id;
+    }
+
+    const paymentShift = counterShifts.find((s) => s.user.role === 'PAYMENT');
+    if (paymentShift) return paymentShift.id;
+    if (counterShifts[0]) return counterShifts[0].id;
+
+    if (openShiftId && actor.role !== 'VALUER') {
+      const fallback = await client.shift.findFirst({
+        where: { id: openShiftId, status: 'OPEN', closedAt: null },
+        select: { id: true },
+      });
+      if (fallback) return fallback.id;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * ຍອດລວມໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະ Payment ທີ່ກຳລັງເປີດຢູ່,
+   * ໃຊ້ໃຫ້ Valuer ກວດສອບຍອດພ້ອມໃຊ້ກ່ອນສ້າງ/ຢືນຢັນລາຍການຈ່າຍ-ຮັບເງິນສົດ.
+   */
+  async counterWalletBalance() {
+    const shifts = await this.findOpenCounterWalletShifts(this.prisma);
+    if (shifts.length === 0) {
+      return {
+        shiftId: null as string | null,
+        hasOpenPaymentShift: false,
+        shiftCount: 0,
+        openedAt: null as Date | null,
+        balances: CURRENCIES.map((currency) => ({
+          currency,
+          inflow: '0',
+          outflow: '0',
+          balance: '0',
+          reserved: '0',
+          available: '0',
+        })),
+      };
+    }
+
+    const totals = new Map<
+      Currency,
+      { inflow: Decimal; outflow: Decimal; balance: Decimal; reserved: Decimal }
+    >(
+      CURRENCIES.map((c) => [
+        c,
+        { inflow: dec(0), outflow: dec(0), balance: dec(0), reserved: dec(0) },
+      ]),
+    );
+
+    await Promise.all(
+      shifts.map(async (shift) => {
+        const [balances, reserved] = await Promise.all([
+          this.calculateShiftWalletBalance(shift.id, this.prisma),
+          this.reservedShiftWalletFunds(shift.id),
+        ]);
+        for (const b of balances) {
+          const acc = totals.get(b.currency)!;
+          acc.inflow = acc.inflow.plus(dec(b.inflow));
+          acc.outflow = acc.outflow.plus(dec(b.outflow));
+          acc.balance = acc.balance.plus(dec(b.balance));
+          acc.reserved = acc.reserved.plus(reserved[b.currency] ?? dec(0));
+        }
+      }),
+    );
+
+    return {
+      shiftId: shifts[0]!.id,
+      hasOpenPaymentShift: true,
+      shiftCount: shifts.length,
+      openedAt: shifts[0]!.openedAt,
+      balances: CURRENCIES.map((currency) => {
+        const acc = totals.get(currency)!;
+        return {
+          currency,
+          inflow: acc.inflow.toFixed(),
+          outflow: acc.outflow.toFixed(),
+          balance: acc.balance.toFixed(),
+          reserved: acc.reserved.toFixed(),
+          available: acc.balance.minus(acc.reserved).toFixed(),
+        };
+      }),
+    };
+  }
+
+  /**
+   * ຍອດເງິນສົດໃນກະເປົ໋າຂອງກະທີ່ຍັງບໍ່ທັນປິດ (OPEN / PENDING_APPROVAL) ຈົນຮອດ `asOf`,
+   * ເພື່ອໃຫ້ COH Cash / Wealth ນັບລວມເງິນທີ່ຍັງຢູ່ກັບໜ້າຮ້ານກ່ອນປິດກະກັບຄືນ Module Cash.
+   */
+  async openShiftWalletTotals(asOf?: Date): Promise<Record<Currency, Decimal>> {
+    const totals: Record<Currency, Decimal> = {
+      LAK: dec(0),
+      THB: dec(0),
+      USD: dec(0),
+    };
+    const date = asOf ?? (await this.businessDay.current()).date;
+    const openShifts = await this.prisma.shift.findMany({
+      where: {
+        status: { in: ['OPEN', 'PENDING_APPROVAL'] },
+        businessDay: { date: { lte: date } },
+      },
+      select: { id: true },
+    });
+    if (openShifts.length === 0) return totals;
+
+    const results = await Promise.all(
+      openShifts.map((s) => this.calculateShiftWalletBalance(s.id, this.prisma)),
+    );
+    for (const balances of results) {
+      for (const b of balances) {
+        totals[b.currency] = totals[b.currency].plus(dec(b.balance));
+      }
+    }
+    return totals;
+  }
+
   async cashHistory(query: HistoryRangeDto, user?: AuthenticatedUser) {
     const range = this.range.resolve(query, user);
-    const where = {
+    const where: Prisma.CashTransactionWhereInput = {
       deletedAt: null,
       createdAt: HistoryRangeService.window(range),
+      ...MODULE_CASH_SCOPE,
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.cashTransaction.findMany({

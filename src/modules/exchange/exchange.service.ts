@@ -8,6 +8,12 @@ import { Prisma, type ApprovalStatus } from '@prisma/client';
 import {
   calculateExchange,
   dec,
+  deriveOldStandardWeight,
+  exchangeRemainingBuybackPrice,
+  normalizeExchangeWeightKey,
+  resolveCashLakSettlement,
+  resolveConversionFeeForWeight,
+  roundDownCashLak,
   shopBuybackPriceKpv,
   validateExchangeBalance,
   type BuybackGoldKind,
@@ -20,6 +26,7 @@ import { ApprovalService } from '../../common/services/approval.service';
 import { BusinessDayService } from '../../common/services/business-day.service';
 import { StockLedgerService } from '../../common/services/stock-ledger.service';
 import { CashService } from '../cash/cash.service';
+import { FeesService } from '../fees/fees.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PricingContextService, type PricingContext } from '../pricing/pricing-context.service';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
@@ -45,25 +52,12 @@ const KIND_BY_CODE: Record<string, BuybackGoldKind> = {
 };
 
 /**
- * Product & buyback boards key 5/3/1 ຫຸນ by printed display weight (1.87 / 1.12 / 0.37),
- * whereas ຄ່າປ່ຽນ tables key them by exact exchange weight (1.875 / 1.125 / 0.375).
- * Normalising on lookup lets SKUs created with either figure match reliably.
+ * Buyback price boards key 5/3/1 ຫຸນ by printed display weight (1.87 / 1.12 / 0.37).
  */
-const DISPLAY_TO_EXCHANGE_WEIGHT: Record<string, string> = {
-  '1.87': '1.875',
-  '1.12': '1.125',
-  '0.37': '0.375',
-};
-
 const EXCHANGE_TO_DISPLAY_WEIGHT: Record<string, string> = {
   '1.875': '1.87',
   '1.125': '1.12',
   '0.375': '0.37',
-};
-
-const toExchangeWeightKey = (weightG: string): string => {
-  const raw = dec(weightG).toFixed();
-  return DISPLAY_TO_EXCHANGE_WEIGHT[raw] ?? raw;
 };
 
 const toBuybackLookupWeight = (weightG: string): string => {
@@ -88,6 +82,7 @@ export class ExchangeService {
     private readonly businessDay: BusinessDayService,
     private readonly stockLedger: StockLedgerService,
     private readonly cash: CashService,
+    private readonly fees: FeesService,
     private readonly notifications: NotificationsService,
     private readonly pricingContext: PricingContextService,
     private readonly range: HistoryRangeService,
@@ -166,34 +161,21 @@ export class ExchangeService {
     const skuById = new Map(skus.map((s) => [s.id, s]));
 
     const [jewelryFees, barFees] = await Promise.all([
-      this.prisma.jewelryConversionFee.findMany({
-        orderBy: { effectiveAt: 'desc' },
-        include: { tier: true },
-      }),
-      this.prisma.barConversionFee.findMany({ orderBy: { effectiveAt: 'desc' } }),
+      this.fees.currentJewelryFees(),
+      this.fees.currentBarFees(),
     ]);
 
     const feeByWeight = new Map<string, { good: Decimal; damaged: Decimal }>();
-    const seenJewelry = new Set<string>();
     for (const fee of jewelryFees) {
-      const key = fee.weightG.toFixed();
-      if (seenJewelry.has(key)) continue;
-      seenJewelry.add(key);
-      if (fee.deletedAt !== null) continue;
-      feeByWeight.set(key, {
+      feeByWeight.set(normalizeExchangeWeightKey(fee.weightG.toFixed()), {
         good: dec(fee.feeGoodShape.toFixed()),
         damaged: dec(fee.feeDamagedShape.toFixed()),
       });
     }
 
     const barFeeByWeight = new Map<string, { toJewelry: Decimal; toBar: Decimal }>();
-    const seenBar = new Set<string>();
     for (const fee of barFees) {
-      const key = fee.weightG.toFixed();
-      if (seenBar.has(key)) continue;
-      seenBar.add(key);
-      if (fee.deletedAt !== null) continue;
-      barFeeByWeight.set(key, {
+      barFeeByWeight.set(normalizeExchangeWeightKey(fee.weightG.toFixed()), {
         toJewelry: dec(fee.barToJewelry.toFixed()),
         toBar: dec(fee.barToBar.toFixed()),
       });
@@ -201,21 +183,28 @@ export class ExchangeService {
 
     const oldMeta = dto.oldLines.map((line: ExchangeOldLineDto, idx) => {
       const w = dec(line.weightG);
-      const std = dec(line.standardWeightG);
       if (!w.isFinite() || w.lte(0)) {
         throw new BadRequestException(`ນ້ຳໜັກຄຳເກົ່າຕ້ອງໃຫຍ່ກວ່າ 0 (ແຖວທີ ${idx + 1})`);
       }
-      if (!std.isFinite() || std.lte(0)) {
-        throw new BadRequestException(`ເກນນ້ຳໜັກ standard ຕ້ອງໃຫຍ່ກວ່າ 0 (ແຖວທີ ${idx + 1})`);
-      }
       const kind = resolveKind(line.goldTypeId);
+      const derived = deriveOldStandardWeight(kind, line.weightG);
+      if (!derived.valid) {
+        throw new BadRequestException(`${derived.errorLo} (ແຖວທີ ${idx + 1})`);
+      }
       const stockPrice = priceLineAtBuyback(kind, line.weightG, line.quantity);
-      return { line, kind, stockPrice };
+      return {
+        line,
+        kind,
+        standardWeightG: derived.standardWeightG,
+        softGoldStandardG: derived.softGoldStandardG,
+        stockPrice,
+      };
     });
 
     const hasOldBar = oldMeta.some((m) => m.kind === 'BAR');
     const hasOldJewelry = oldMeta.some((m) => m.kind === 'GOOD' || m.kind === 'HUMP');
     const primaryOldKind = oldMeta[0]?.kind ?? 'HUMP';
+    const isFree = dto.txnType === 'FREE_EXCHANGE';
 
     const newLinesInput = dto.newLines.map((line, idx) => {
       const w = dec(line.weightG);
@@ -225,28 +214,41 @@ export class ExchangeService {
       const sku = skuById.get(line.goldSkuId);
       if (!sku) throw new NotFoundException('ບໍ່ພົບ SKU ຂອງຄຳໃໝ່');
 
-      const key = toExchangeWeightKey(line.weightG);
       const isNewBar = sku.goldItem?.code === 'GOLD_BAR';
       const useBarFee = (hasOldBar && !hasOldJewelry) || (hasOldBar && isNewBar);
 
       if (useBarFee) {
-        const barFee = barFeeByWeight.get(key);
+        const { valid, fee } = resolveConversionFeeForWeight(line.weightG, (k) => {
+          const entry = barFeeByWeight.get(k);
+          return entry ? (isNewBar ? entry.toBar : entry.toJewelry) : undefined;
+        });
+        if (!isFree && !valid) {
+          throw new BadRequestException(
+            `ນ້ຳໜັກຄຳໃໝ່ (${line.weightG} g) ບໍ່ຕົງຕາມເງືອນໄຂ — ເກີນ 15g ຕ້ອງຫານ 15 ລົງໂຕ (ແຖວທີ ${idx + 1})`,
+          );
+        }
         return {
           weightG: line.weightG,
           quantity: line.quantity,
           humpFee: dec(0),
-          barConvertFee: barFee ? (isNewBar ? barFee.toBar : barFee.toJewelry) : dec(0),
+          barConvertFee: fee,
           patternFee: line.patternFee ?? 0,
         };
       }
 
-      const fee = feeByWeight.get(key);
+      const { valid, fee } = resolveConversionFeeForWeight(line.weightG, (k) => {
+        const entry = feeByWeight.get(k);
+        return entry ? (dto.shapeCondition === 'GOOD' ? entry.good : entry.damaged) : undefined;
+      });
+      if (!isFree && !valid) {
+        throw new BadRequestException(
+          `ນ້ຳໜັກຄຳໃໝ່ (${line.weightG} g) ບໍ່ຕົງຕາມເງືອນໄຂ — ເກີນ 15g ຕ້ອງຫານ 15 ລົງໂຕ (ແຖວທີ ${idx + 1})`,
+        );
+      }
       return {
         weightG: line.weightG,
         quantity: line.quantity,
-        humpFee: fee
-          ? (dto.shapeCondition === 'GOOD' ? fee.good : fee.damaged)
-          : dec(0),
+        humpFee: fee,
         barConvertFee: dec(0),
         patternFee: line.patternFee ?? 0,
       };
@@ -258,10 +260,16 @@ export class ExchangeService {
         throw new BadRequestException(`ນ້ຳໜັກຄຳເກົ່າຄົງເຫຼືອຕ້ອງໃຫຍ່ກວ່າ 0 (ແຖວທີ ${idx + 1})`);
       }
       const kind = line.goldTypeId ? resolveKind(line.goldTypeId) : primaryOldKind;
+      const unitBuyback = exchangeRemainingBuybackPrice(kind, line.weightG, context.source);
+      if (unitBuyback === null) {
+        throw new BadRequestException(
+          `ນ້ຳໜັກຄຳເກົ່າຄົງເຫຼືອ (${line.weightG} g) ບໍ່ຕົງຕາມເກນມາດຕະຖານ — ກະລຸນາແຍກຕາມເກນ (ແຖວທີ ${idx + 1})`,
+        );
+      }
       return {
         weightG: line.weightG,
         quantity: line.quantity,
-        shopBuybackPrice: priceLineAtBuyback(kind, line.weightG, line.quantity),
+        shopBuybackPrice: unitBuyback.mul(dec(line.quantity)),
       };
     });
 
@@ -273,7 +281,8 @@ export class ExchangeService {
         oldLines: oldMeta.map((m) => ({
           weightG: m.line.weightG,
           quantity: m.line.quantity,
-          standardWeightG: m.line.standardWeightG,
+          standardWeightG: m.standardWeightG,
+          softGoldStandardG: m.softGoldStandardG,
           goldKind: m.kind,
           shopBuybackPrice: dec(0),
         })),
@@ -365,7 +374,7 @@ export class ExchangeService {
               goldItemId: line.goldItemId ?? null,
               weightG: D(dec(line.weightG)),
               quantity: line.quantity,
-              standardWeightG: D(dec(line.standardWeightG)),
+              standardWeightG: D(dec(input.oldLines[index]!.standardWeightG)),
               shopBuybackPrice: D(oldLineStockPrices[index]!),
             })),
           },
@@ -532,7 +541,7 @@ export class ExchangeService {
           goldItemId: line.goldItemId ?? null,
           weightG: D(dec(line.weightG)),
           quantity: line.quantity,
-          standardWeightG: D(dec(line.standardWeightG)),
+          standardWeightG: D(dec(input.oldLines[index]!.standardWeightG)),
           shopBuybackPrice: D(oldLineStockPrices[index]!),
         })),
       });
@@ -621,12 +630,26 @@ export class ExchangeService {
     const day = await this.businessDay.current();
 
     return this.prisma.$transaction(async (tx) => {
+      const hasCashOrChange = exchange.payments.some(
+        (p) => p.method === 'CASH' || dec(p.changeLak.toFixed()).gt(0),
+      );
+      const cashShiftId = await this.cash.resolveCounterCashShiftId({
+        actor: user,
+        openShiftId,
+        client: tx,
+      });
+
       if (dto.decision === 'APPROVED') {
+        if (hasCashOrChange && !cashShiftId) {
+          throw new BadRequestException(
+            'ກະລຸນາເປີດກະ Payment ແລະ ເບີກເງິນເຂົ້າກະເປົ໋າເງິນສົດ (To Day) ກ່ອນອະນຸມັດລາຍການເງິນສົດ',
+          );
+        }
         await this.assertFundsForPosting(
           exchange.payments,
           isIncoming,
           `ການຈ່າຍປ່ຽນເປັນເງິນ ${exchange.code}`,
-          openShiftId,
+          cashShiftId,
           tx,
         );
       }
@@ -647,7 +670,7 @@ export class ExchangeService {
       if (dto.decision === 'APPROVED') {
         await this.postCashAndBank(tx, {
           businessDayId: day.id,
-          shiftId: openShiftId ?? exchange.shiftId,
+          shiftId: cashShiftId ?? openShiftId ?? exchange.shiftId,
           exchangeId: exchange.id,
           code: exchange.code,
           isIncoming,
@@ -819,11 +842,25 @@ export class ExchangeService {
     const day = await this.businessDay.current();
 
     return this.prisma.$transaction(async (tx) => {
+      const cashShiftId = await this.cash.resolveCounterCashShiftId({
+        actor: user,
+        openShiftId,
+        preferredUserId: exchange.approvedById ?? undefined,
+        client: tx,
+      });
+      const hasCashOrChange = resolved.lines.some(
+        (l) => l.method === 'CASH' || dec(l.changeLak).gt(0),
+      );
+      if (hasCashOrChange && !cashShiftId) {
+        throw new BadRequestException(
+          'ກະລຸນາເປີດກະ Payment ແລະ ເບີກເງິນເຂົ້າກະເປົ໋າເງິນສົດ (To Day) ກ່ອນດຳເນີນການເງິນສົດ',
+        );
+      }
       await this.assertFundsForPosting(
         resolved.lines,
         isIncoming,
         `ການຊຳລະຄ້າງປ່ຽນເປັນເງິນ ${exchange.code}`,
-        effectiveShiftId,
+        cashShiftId,
         tx,
       );
       const nextPaid = dec(exchange.paidAmount.toFixed()).plus(resolved.appliedLak);
@@ -853,7 +890,7 @@ export class ExchangeService {
 
       await this.postCashAndBank(tx, {
         businessDayId: day.id,
-        shiftId: effectiveShiftId,
+        shiftId: cashShiftId ?? effectiveShiftId,
         exchangeId: exchange.id,
         code: exchange.code,
         isIncoming,
@@ -1025,16 +1062,24 @@ export class ExchangeService {
 
     let lakLegsTotal = dec(0);
     let foreignLakTotal = dec(0);
+    let hasCashLakLeg = false;
 
     const resolved = lines.map((line) => {
       if (line.method === 'BANK' && !line.bankAccountId) {
         throw new BadRequestException('ກະລຸນາເລືອກທະນາຄານ');
       }
 
-      const amount = dec(line.amount);
-      if (!amount.isFinite() || amount.lte(0)) {
+      const rawAmount = dec(line.amount);
+      if (!rawAmount.isFinite() || rawAmount.lte(0)) {
         throw new BadRequestException('ຈຳນວນເງິນຕ້ອງໃຫຍ່ກວ່າ 0');
       }
+
+      const isCashLak = line.method === 'CASH' && line.currency === 'LAK';
+      const amount = isCashLak ? roundDownCashLak(rawAmount) : rawAmount;
+      if (amount.lte(0)) {
+        throw new BadRequestException('ຈຳນວນເງິນສົດ LAK ຕ້ອງຢ່າງໜ້ອຍ 500 LAK');
+      }
+      if (isCashLak) hasCashLakLeg = true;
 
       const rate = PricingContextService.rateFor(rates, line.currency, rateDirection);
       const amountLak = amount.mul(rate);
@@ -1060,7 +1105,8 @@ export class ExchangeService {
     }
 
     const totalLak = lakLegsTotal.plus(foreignLakTotal);
-    const changeLak = totalLak.gt(owedLak) ? totalLak.minus(owedLak) : dec(0);
+    const settlement = resolveCashLakSettlement(owedLak, totalLak, hasCashLakLeg);
+    const changeLak = settlement.changeLak;
 
     if (changeLak.gt(0) && resolved.length > 0) {
       let targetIdx = resolved.length - 1;
@@ -1073,11 +1119,13 @@ export class ExchangeService {
       resolved[targetIdx]!.changeLak = changeLak;
     }
 
-    const appliedLak = totalLak.minus(changeLak);
-    const remaining = owedLak.minus(appliedLak);
-    const outstandingAmount = remaining.gt(0) ? remaining : dec(0);
-
-    return { lines: resolved, totalLak, changeLak, appliedLak, outstandingAmount };
+    return {
+      lines: resolved,
+      totalLak,
+      changeLak,
+      appliedLak: settlement.appliedLak,
+      outstandingAmount: settlement.remainingLak,
+    };
   }
 
   private toPaymentCreateInput(

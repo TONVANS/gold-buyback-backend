@@ -1,3 +1,4 @@
+import DecimalJs from 'decimal.js';
 import { Decimal, type Numeric } from './decimal.js';
 /**
  * Excel ROUND — nearest, ties away from zero.
@@ -37,4 +38,40 @@ export declare function isMultipleOf(value: Numeric, divisor: Numeric): boolean;
  * TOR §7.2 "ຕັດເສດຫຼັງຈຸດ" when deriving ລາຄາ/g from a gold-type cost.
  */
 export declare function truncate(value: Numeric, dp?: number): Decimal;
+/**
+ * Smallest physical LAK cash denomination accepted/paid out by the shop (500 LAK):
+ *   0 .. 499   ->   0   (e.g. 128,300 -> 128,000)
+ *   500 .. 999 -> 500   (e.g. 128,900 -> 128,500)
+ */
+export declare const LAK_CASH_STEP: DecimalJs;
+/** Round a LAK cash amount DOWN to the nearest 500 LAK note. */
+export declare function roundDownCashLak(amount: Numeric): Decimal;
+export interface CashLakSettlement {
+    /** Change in physical LAK cash, rounded down to the nearest 500 LAK. */
+    changeLak: Decimal;
+    /** True when a shortfall < 500 LAK was absorbed by cash rounding. */
+    cashRounded: boolean;
+    /** Remaining unpaid balance after cash rounding (`0` when `cashRounded`). */
+    remainingLak: Decimal;
+    /** Amount applied against `owedLak` (`owedLak` when `cashRounded` or overpaid). */
+    appliedLak: Decimal;
+}
+/**
+ * Resolve LAK cash settlement for Exchange / Buyback / Credit:
+ * - Physical LAK cash change (`totalLak > owedLak`) is rounded DOWN to 500 LAK.
+ * - When a transaction includes a `CASH` + `LAK` leg and the remaining shortfall
+ *   is strictly below 500 LAK (`0 < owedLak - totalLak < 500`), that unpayable
+ *   fraction is waived so the bill settles cleanly (`remainingLak = 0`).
+ */
+export declare function resolveCashLakSettlement(owedLak: Numeric, totalLak: Numeric, hasCashLakLeg: boolean): CashLakSettlement;
+/**
+ * Resolve LAK settlement for Buyback across ALL currencies (LAK, THB, USD)
+ * and ALL methods (CASH, BANK):
+ * - Total paid (LAK equivalent) must be <= `owedLak` (enforced by caller).
+ * - Any remaining shortfall is rounded DOWN to 500 LAK steps:
+ *     0 .. 499   ->   0   (waived completely)
+ *     500 .. 999 -> 500   (e.g. 501..999 adjusted down to 500)
+ *     1,001..1,499 -> 1,000, etc.
+ */
+export declare function resolveBuybackLakSettlement(owedLak: Numeric, totalLak: Numeric): CashLakSettlement;
 //# sourceMappingURL=rounding.d.ts.map

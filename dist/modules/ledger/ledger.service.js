@@ -303,8 +303,9 @@ let LedgerService = class LedgerService {
         const asOf = cleanDate
             ? new Date(`${cleanDate}T00:00:00.000Z`)
             : (day?.date ?? business_day_service_1.BusinessDayService.toDateOnly());
-        const [cashBalances, bankBalances, apAr, goldSummary, wacPosition, advanceNet] = await Promise.all([
+        const [cashBalances, openWalletTotals, bankBalances, apAr, goldSummary, wacPosition, advanceNet] = await Promise.all([
             this.cash.cashBalances(asOf),
+            this.cash.openShiftWalletTotals(asOf),
             this.cash.bankBalances(asOf),
             // ມື້ທີ່ບໍ່ເຄີຍເປີດ: ສົ່ງ id ທີ່ບໍ່ກົງກັບແຖວໃດ ແລ້ວໄດ້ຍອດ 0 ຜ່ານເສັ້ນທາງດຽວກັນ.
             this.cashApAr(day ?? { id: '—', date: asOf }),
@@ -312,7 +313,10 @@ let LedgerService = class LedgerService {
             this.stockLedger.currentWac(this.prisma, asOf),
             this.advance.netByCurrency(this.prisma, asOf),
         ]);
-        const cashByCurrency = new Map(cashBalances.map((b) => [b.currency, (0, domain_1.dec)(b.balance)]));
+        const cashByCurrency = new Map(cashBalances.map((b) => [
+            b.currency,
+            (0, domain_1.dec)(b.balance).plus(openWalletTotals[b.currency] ?? (0, domain_1.dec)(0)),
+        ]));
         const bankAccounts = Array.from(new Map(bankBalances.map((b) => [
             b.bankAccountId,
             { id: b.bankAccountId, code: b.bankCode, nameLo: b.bankNameLo },

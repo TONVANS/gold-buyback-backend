@@ -127,7 +127,7 @@ __decorate([
 ], CreditController.prototype, "cancel", null);
 __decorate([
     openapi.ApiOperation({ summary: "\u0EAE\u0EB1\u0E9A\u0E84\u0EC8\u0EB2\u0E87\u0EA7\u0E94 \u2014 draws down the outstanding AR (Cash)." }),
-    (0, roles_decorator_1.Roles)('PAYMENT', 'ADMIN', 'MANAGER'),
+    (0, roles_decorator_1.Roles)('PAYMENT', 'FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER'),
     (0, requires_shift_decorator_1.RequiresOpenShift)(),
     (0, common_1.Post)(':id/receipts'),
     openapi.ApiResponse({ status: 201, type: Object }),

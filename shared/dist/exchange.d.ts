@@ -1,4 +1,5 @@
 import { Decimal, type Numeric } from './decimal.js';
+import type { BuybackGoldKind, BuybackPriceSource } from './buyback.js';
 export type ExchangeTxnType = 'EXCHANGE_TO_CASH' | 'FREE_EXCHANGE';
 export type ShapeCondition = 'GOOD' | 'DAMAGED';
 /** ປະເພດຄຳ of an old line — only ຄຳຫຍຸບ is ever charged ຄ່າອ່ອນ. */
@@ -9,6 +10,11 @@ export interface ExchangeOldLine {
     quantity: Numeric;
     /** ເກນນ້ຳໜັກ standard for this item — the weight it left the shop at. */
     standardWeightG: Numeric;
+    /**
+     * Optional display-weight standard used by `ປ່ຽນເປັນເງິນ!F9` (e.g. 1.87 for 5H).
+     * Falls back to `standardWeightG` when omitted.
+     */
+    softGoldStandardG?: Numeric;
     /**
      * ປະເພດຄຳ. Omitted lines are treated as ຄຳຫຍຸບ, which is the only kind the
      * shop charges ຄ່າອ່ອນ on and the only kind this fee was ever written for.
@@ -91,6 +97,69 @@ export interface ExchangeValidation {
  * `C7` is the ຄ່າອ່ອນ cell on the workbook's ຄ່າອ່ອນ sheet — the current value,
  * 400,000 — so the parameter keeps that meaning.
  */
+/**
+ * Exchange weight tiers (Produets column C / B) ordered descending.
+ *
+ * Jewellery tiers carry both the printed display weight (`1.87`, `1.12`, `0.37` —
+ * Produets column B, used by `ປ່ຽນເປັນເງິນ!F9` for `ຄ່າອ່ອນ`) and the exact
+ * exchange weight (`1.875`, `1.125`, `0.375` — Produets column C, used by
+ * `ປ່ຽນເປັນເງິນ!B46` for the weight balance).
+ */
+export declare const JEWELRY_EXCHANGE_TIERS: readonly {
+    displayG: Decimal;
+    exchangeG: Decimal;
+}[];
+export declare const BAR_EXCHANGE_WEIGHTS: readonly Decimal[];
+export interface OldStandardDerivation {
+    valid: boolean;
+    /** Standard weight used for the §5.2 zero-balance check (`ປ່ຽນເປັນເງິນ!B46`). */
+    standardWeightG: Decimal;
+    /** Standard weight used for `ຄ່າອ່ອນ` (`ປ່ຽນເປັນເງິນ!F9`). */
+    softGoldStandardG: Decimal;
+    errorLo?: string;
+}
+/**
+ * Derive and validate the standard weight of an old gold line directly from
+ * its `goldKind` and actual `weightG`, matching `ປ່ຽນເປັນເງິນ!F9` and `B46`.
+ *
+ * - `GOOD` (ຄຳດີ): must match a jewellery tier (or a multiple of 15 g); no ຄ່າອ່ອນ.
+ * - `BAR`  (ຄຳແທ່ງ): must match 1 / 3.75 / 7.5 g or a multiple of 15 g; no ຄ່າອ່ອນ.
+ * - `HUMP` (ຄຳຫຍຸບ): rounds up to `CEILING(w, 15)` when > 15 g, or the smallest
+ *   jewellery tier >= w when <= 15 g.
+ */
+export declare function deriveOldStandardWeight(kind: Exclude<ExchangeGoldKind, 'BOILED'>, weightG: Numeric): OldStandardDerivation;
+/**
+ * ລາຄາຊື້ຄືນໜ້າຮ້ານ for `ຄຳເກົ່າຄົງເຫຼືອ` (`ປ່ຽນເປັນເງິນ!D32:D41`).
+ *
+ * Unlike counter buyback (§5.1), `ຄຳເກົ່າຄົງເຫຼືອ` in §5.2 NEVER rounds up a
+ * non-tier weight via CEILING / lookupAtLeast: every remaining piece must match
+ * an exact tier (or a multiple of 15 g), otherwise it returns `null` (`0` in Excel).
+ */
+export declare function exchangeRemainingBuybackPrice(kind: Exclude<BuybackGoldKind, 'BOILED'>, weightG: Numeric, source: BuybackPriceSource): Decimal | null;
+/**
+ * Split a remaining weight difference (e.g. `5.625 g`) into exact standard tiers
+ * from largest to smallest (e.g. `[3.75, 1.875]`), so each remaining line can
+ * be priced cleanly via `exchangeRemainingBuybackPrice`.
+ */
+export declare function splitWeightIntoExchangeTiers(weightG: Numeric, kind?: Exclude<ExchangeGoldKind, 'BOILED'>): {
+    tiers: Decimal[];
+    remainder: Decimal;
+};
+/**
+ * Normalise a printed display weight (`1.87`, `1.12`, `0.37`) to its exact
+ * exchange key (`1.875`, `1.125`, `0.375`) for conversion fee lookups.
+ */
+export declare function normalizeExchangeWeightKey(weightG: Numeric): string;
+/**
+ * Resolve a conversion fee (`ຄ່າຫຍຸບ` or `ຄ່າປ່ຽນຄຳແທ່ງ`) for a single new-gold
+ * line, matching `ປ່ຽນເປັນເງິນ!E16` / `F16`:
+ * - Weights > 15 g must be a multiple of 15 g and scale linearly from the 15 g fee.
+ * - Weights <= 15 g look up the exact weight key.
+ */
+export declare function resolveConversionFeeForWeight(weightG: Numeric, feeAtWeight: (key: string) => Decimal | undefined): {
+    valid: boolean;
+    fee: Decimal;
+};
 export declare function softGoldFeeForLine(line: ExchangeOldLine, softGoldFee: Numeric): Decimal;
 /**
  * How many 0.1 g steps a shortfall is billed at.

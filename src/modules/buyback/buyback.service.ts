@@ -6,7 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, type ApprovalStatus } from '@prisma/client';
-import { calculateBuyback, dec, type BuybackGoldKind, type Decimal } from '@kpv/domain';
+import {
+  calculateBuyback,
+  dec,
+  resolveBuybackLakSettlement,
+  roundDownCashLak,
+  type BuybackGoldKind,
+  type Decimal,
+} from '@kpv/domain';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/services/audit.service';
 import { HistoryRangeService } from '../../common/services/history-range.service';
@@ -144,6 +151,11 @@ export class BuybackService {
       const kind = source === 'OTHER_SHOP' ? 'BOILED' : this.kindFor(goldType.code);
 
       if (kind === 'BOILED') {
+        if (!/^\d{1,15}(\.\d{1,2})?$/.test(line.weightG.trim())) {
+          throw new BadRequestException(
+            `ນ້ຳໜັກຄຳຮ້ານອື່ນ ປ້ອນຫຼັງຈຸດໄດ້ບໍ່ເກີນ 2 ຕົວ (ແຖວທີ ${index + 1})`,
+          );
+        }
         if (!line.goldPercent) {
           throw new BadRequestException(`ຄຳຕົ້ມຕ້ອງປ້ອນ %ຄຳ (ແຖວທີ ${index + 1})`);
         }
@@ -159,7 +171,7 @@ export class BuybackService {
           weightG: line.weightG,
           quantity: line.quantity,
           goldPercent: line.goldPercent,
-          deduction: line.deduction,
+          softGoldFeePerUnit: context.softGoldFeePerGram,
         },
         context.source,
         context.table,
@@ -260,7 +272,7 @@ export class BuybackService {
     });
 
     const created = await this.prisma.$transaction(async (tx) => {
-      const paidLak = payments.totalLak.minus(payments.changeLak);
+      const paidLak = payments.appliedLak;
       const buyback = await tx.buyback.create({
         data: {
           code: await this.nextCode(tx),
@@ -286,7 +298,7 @@ export class BuybackService {
           // TOR §5.1 History carries ຍອດເງິນຄ້າງຈ່າຍ, so a partly-paid
           // buyback is visible rather than looking settled.
           paidAmount: D(paidLak),
-          outstandingAmount: D(summary.totalPayable.minus(paidLak)),
+          outstandingAmount: D(payments.outstandingAmount),
           status: 'PENDING',
           createdById: user.id,
           payments: {
@@ -398,7 +410,7 @@ export class BuybackService {
     });
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const paidLak = payments.totalLak.minus(payments.changeLak);
+      const paidLak = payments.appliedLak;
       const claim = await tx.buyback.updateMany({
         where: { id, status: 'PENDING', deletedAt: null },
         data: {
@@ -416,7 +428,7 @@ export class BuybackService {
           deduction: D(summary.deduction),
           payableAmount: D(summary.totalPayable),
           paidAmount: D(paidLak),
-          outstandingAmount: D(summary.totalPayable.minus(paidLak)),
+          outstandingAmount: D(payments.outstandingAmount),
         },
       });
       if (claim.count !== 1) {
@@ -481,8 +493,13 @@ export class BuybackService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.decision === 'APPROVED') {
-        await this.cash.assertShiftWalletAndBankFunds(
+        const cashShiftId = await this.cash.resolveCounterCashShiftId({
+          actor: user,
           openShiftId,
+          client: tx,
+        });
+        await this.cash.assertShiftWalletAndBankFunds(
+          cashShiftId,
           buyback.payments,
           `ການຈ່າຍ Buyback ${buyback.code}`,
           { excludeBuybackId: buyback.id, client: tx },
@@ -569,24 +586,23 @@ export class BuybackService {
     this.approval.assertTransition(buyback.status, 'COMPLETED');
 
     const day = await this.businessDay.current();
-    const hasCashLeg = buyback.payments.some((p) => p.method === 'CASH');
+    const hasCashOrChange = buyback.payments.some(
+      (p) => p.method === 'CASH' || dec(p.changeLak.toFixed()).gt(0),
+    );
 
     return this.prisma.$transaction(async (tx) => {
-      const approverShift = buyback.approvedById
-        ? await tx.shift.findFirst({
-            where: { userId: buyback.approvedById, status: 'OPEN' },
-            orderBy: { openedAt: 'desc' },
-            select: { id: true },
-          })
-        : null;
+      const cashShiftId = await this.cash.resolveCounterCashShiftId({
+        actor: user,
+        openShiftId,
+        preferredUserId: buyback.approvedById ?? undefined,
+        client: tx,
+      });
 
-      if (hasCashLeg && !approverShift) {
+      if (hasCashOrChange && !cashShiftId) {
         throw new BadRequestException(
-          'ກະຂອງຜູ້ອະນຸມັດ (Payment) ຍັງບໍ່ໄດ້ເປີດ ຫຼື ປິດກະແລ້ວ — ບໍ່ສາມາດຕັດເງິນສົດຈາກກະເປົ໋າເງິນສົດ (To Day) ໄດ້',
+          'ກະຂອງຜູ້ອະນຸມັດ (Payment) ຍັງບໍ່ໄດ້ເປີດ ຫຼື ປິດກະແລ້ວ — ບໍ່ສາມາດຕັດ/ຮັບເງິນສົດໃນກະເປົ໋າເງິນສົດ (To Day) ໄດ້',
         );
       }
-
-      const cashShiftId = approverShift?.id;
 
       await this.cash.assertShiftWalletAndBankFunds(
         cashShiftId,
@@ -761,9 +777,16 @@ export class BuybackService {
     const day = buyback.status === 'COMPLETED' ? await this.businessDay.current() : null;
 
     return this.prisma.$transaction(async (tx) => {
+      let cashShiftId = effectiveShiftId;
       if (buyback.status === 'COMPLETED') {
+        cashShiftId = await this.cash.resolveCounterCashShiftId({
+          actor: user,
+          openShiftId,
+          preferredUserId: buyback.approvedById ?? undefined,
+          client: tx,
+        });
         await this.cash.assertShiftWalletAndBankFunds(
-          effectiveShiftId,
+          cashShiftId,
           resolved.lines.map((l) => ({
             method: l.method,
             bankAccountId: l.bankAccountId ?? null,
@@ -774,9 +797,9 @@ export class BuybackService {
           { client: tx },
         );
       }
-      const appliedLak = resolved.totalLak.minus(resolved.changeLak);
+      const appliedLak = resolved.appliedLak;
       const nextPaid = dec(buyback.paidAmount.toFixed()).plus(appliedLak);
-      const nextOutstanding = dec(buyback.payableAmount.toFixed()).minus(nextPaid);
+      const nextOutstanding = resolved.outstandingAmount;
 
       const claim = await tx.buyback.updateMany({
         where: {
@@ -800,10 +823,10 @@ export class BuybackService {
         ),
       );
 
-      if (buyback.status === 'COMPLETED' && day && effectiveShiftId) {
+      if (buyback.status === 'COMPLETED' && day && (cashShiftId ?? effectiveShiftId)) {
         await this.postCashAndBankOut(tx, {
           businessDayId: day.id,
-          shiftId: effectiveShiftId,
+          shiftId: cashShiftId ?? effectiveShiftId!,
           buybackId: buyback.id,
           code: buyback.code,
           payments: createdPayments,
@@ -1114,16 +1137,24 @@ export class BuybackService {
   ) {
     let lakLegsTotal = dec(0);
     let foreignLakTotal = dec(0);
+    let hasCashLakLeg = false;
 
     const resolved = lines.map((line) => {
       if (line.method === 'BANK' && !line.bankAccountId) {
         throw new BadRequestException('ກະລຸນາເລືອກທະນາຄານ');
       }
 
-      const amount = dec(line.amount);
-      if (!amount.isFinite() || amount.lte(0)) {
+      const rawAmount = dec(line.amount);
+      if (!rawAmount.isFinite() || rawAmount.lte(0)) {
         throw new BadRequestException('ຈຳນວນເງິນຕ້ອງໃຫຍ່ກວ່າ 0');
       }
+
+      const isCashLak = line.method === 'CASH' && line.currency === 'LAK';
+      const amount = isCashLak ? roundDownCashLak(rawAmount) : rawAmount;
+      if (amount.lte(0)) {
+        throw new BadRequestException('ຈຳນວນເງິນສົດ LAK ຕ້ອງຢ່າງໜ້ອຍ 500 LAK');
+      }
+      if (isCashLak) hasCashLakLeg = true;
 
       const rate = PricingContextService.rateFor(rates, line.currency, 'buyback');
       const amountLak = amount.mul(rate);
@@ -1149,7 +1180,14 @@ export class BuybackService {
     }
 
     const totalLak = resolved.reduce((sum, line) => sum.plus(line.amountLak), dec(0));
-    const change = totalLak.minus(payableAmount);
+    if (totalLak.gt(payableAmount)) {
+      throw new BadRequestException(
+        `ຈຳນວນເງິນທີ່ຈ່າຍລວມ (${totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ເກີນລວມເງິນທີ່ຕ້ອງຈ່າຍ (${payableAmount.toFixed(0)} LAK)`,
+      );
+    }
+
+    const settlement = resolveBuybackLakSettlement(payableAmount, totalLak);
+    const change = settlement.changeLak;
 
     // Change is LAK-only and is attributed to the last foreign-currency leg (or last leg).
     if (change.gt(0) && resolved.length > 0) {
@@ -1159,7 +1197,13 @@ export class BuybackService {
       resolved[idx]!.changeLak = change;
     }
 
-    return { lines: resolved, totalLak, changeLak: change.gt(0) ? change : dec(0) };
+    return {
+      lines: resolved,
+      totalLak,
+      changeLak: change,
+      appliedLak: settlement.appliedLak,
+      outstandingAmount: settlement.remainingLak,
+    };
   }
 
   /** Atomic, sequential code in Vientiane local business date: BB-YYMMDD-NNN. */

@@ -89,3 +89,88 @@ export function isMultipleOf(value: Numeric, divisor: Numeric): boolean {
 export function truncate(value: Numeric, dp = 0): Decimal {
   return dec(value).toDecimalPlaces(dp, DecimalJs.ROUND_DOWN);
 }
+
+/**
+ * Smallest physical LAK cash denomination accepted/paid out by the shop (500 LAK):
+ *   0 .. 499   ->   0   (e.g. 128,300 -> 128,000)
+ *   500 .. 999 -> 500   (e.g. 128,900 -> 128,500)
+ */
+export const LAK_CASH_STEP = dec(500);
+
+/** Round a LAK cash amount DOWN to the nearest 500 LAK note. */
+export function roundDownCashLak(amount: Numeric): Decimal {
+  const a = dec(amount);
+  if (!a.isFinite() || a.lte(0)) return dec(0);
+  return floorTo(a, LAK_CASH_STEP);
+}
+
+export interface CashLakSettlement {
+  /** Change in physical LAK cash, rounded down to the nearest 500 LAK. */
+  changeLak: Decimal;
+  /** True when a shortfall < 500 LAK was absorbed by cash rounding. */
+  cashRounded: boolean;
+  /** Remaining unpaid balance after cash rounding (`0` when `cashRounded`). */
+  remainingLak: Decimal;
+  /** Amount applied against `owedLak` (`owedLak` when `cashRounded` or overpaid). */
+  appliedLak: Decimal;
+}
+
+/**
+ * Resolve LAK cash settlement for Exchange / Buyback / Credit:
+ * - Physical LAK cash change (`totalLak > owedLak`) is rounded DOWN to 500 LAK.
+ * - When a transaction includes a `CASH` + `LAK` leg and the remaining shortfall
+ *   is strictly below 500 LAK (`0 < owedLak - totalLak < 500`), that unpayable
+ *   fraction is waived so the bill settles cleanly (`remainingLak = 0`).
+ */
+export function resolveCashLakSettlement(
+  owedLak: Numeric,
+  totalLak: Numeric,
+  hasCashLakLeg: boolean,
+): CashLakSettlement {
+  const owed = dec(owedLak);
+  const total = dec(totalLak);
+
+  const rawChange = total.gt(owed) ? total.minus(owed) : dec(0);
+  const changeLak = roundDownCashLak(rawChange);
+
+  const rawRemaining = owed.gt(total) ? owed.minus(total) : dec(0);
+  const cashRounded =
+    hasCashLakLeg && rawRemaining.gt(0) && rawRemaining.lt(LAK_CASH_STEP);
+
+  const remainingLak = cashRounded ? dec(0) : rawRemaining;
+  const appliedLak = cashRounded
+    ? owed
+    : total.gt(owed)
+      ? owed
+      : total;
+
+  return { changeLak, cashRounded, remainingLak, appliedLak };
+}
+
+/**
+ * Resolve LAK settlement for Buyback across ALL currencies (LAK, THB, USD)
+ * and ALL methods (CASH, BANK):
+ * - Total paid (LAK equivalent) must be <= `owedLak` (enforced by caller).
+ * - Any remaining shortfall is rounded DOWN to 500 LAK steps:
+ *     0 .. 499   ->   0   (waived completely)
+ *     500 .. 999 -> 500   (e.g. 501..999 adjusted down to 500)
+ *     1,001..1,499 -> 1,000, etc.
+ */
+export function resolveBuybackLakSettlement(
+  owedLak: Numeric,
+  totalLak: Numeric,
+): CashLakSettlement {
+  const owed = dec(owedLak);
+  const total = dec(totalLak);
+
+  const rawChange = total.gt(owed) ? total.minus(owed) : dec(0);
+  const changeLak = roundDownCashLak(rawChange);
+
+  const rawRemaining = owed.gt(total) ? owed.minus(total) : dec(0);
+  const remainingLak = roundDownCashLak(rawRemaining);
+  const cashRounded = rawRemaining.gt(remainingLak);
+
+  const appliedLak = total.gt(owed) ? owed : owed.minus(remainingLak);
+
+  return { changeLak, cashRounded, remainingLak, appliedLak };
+}

@@ -81,6 +81,12 @@ export class CashController {
     return this.cash.walletBalance(user.id);
   }
 
+  /** ຍອດລວມໃນກະເປົ໋າເງິນສົດ (To Day) ຂອງກະ Payment ທີ່ກຳລັງເປີດຢູ່ (ສຳລັບ Valuer ກວດກ່ອນຈ່າຍ/ທອນ). */
+  @Get('wallet/counter')
+  counterWallet() {
+    return this.cash.counterWalletBalance();
+  }
+
   @Get('history')
   cashHistory(@Query() query: HistoryRangeDto, @CurrentUser() user: AuthenticatedUser) {
     return this.cash.cashHistory(query, user);

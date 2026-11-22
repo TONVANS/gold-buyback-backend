@@ -508,6 +508,7 @@ let CatalogService = class CatalogService {
             ['Buyback', this.prisma.buyback.count({ where: { goldItemId: id } })],
             ['ລາຍການປ່ຽນ', this.prisma.exchangeOldLine.count({ where: { goldItemId: id } })],
             ['ສິນເຊື່ອ', this.prisma.goldCredit.count({ where: { goldItemId: id } })],
+            ['ແຖວສິນເຊື່ອ', this.prisma.creditLine.count({ where: { goldItemId: id } })],
             ['Order', this.prisma.order.count({ where: { goldItemId: id } })],
         ]);
         const after = await this.prisma.goldItem.update({
@@ -548,6 +549,7 @@ let CatalogService = class CatalogService {
         }
         await this.assertUnused('ຕູ້ເຄື່ອງ', [
             ['ສິນເຊື່ອ', this.prisma.goldCredit.count({ where: { cabinetId: id } })],
+            ['ແຖວສິນເຊື່ອ', this.prisma.creditLine.count({ where: { cabinetId: id } })],
             ['ລາຍການເຄື່ອນໄຫວສາງ', this.prisma.stockMovement.count({ where: { cabinetId: id } })],
         ]);
         const after = await this.prisma.cabinet.update({

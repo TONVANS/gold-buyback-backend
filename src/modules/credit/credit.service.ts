@@ -6,13 +6,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, type ApprovalStatus, type Currency } from '@prisma/client';
-import { dec, type Decimal } from '@kpv/domain';
+import {
+  dec,
+  resolveCashLakSettlement,
+  roundDownCashLak,
+  type Decimal,
+} from '@kpv/domain';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/services/audit.service';
 import { HistoryRangeService } from '../../common/services/history-range.service';
 import { ApprovalService } from '../../common/services/approval.service';
 import { BusinessDayService } from '../../common/services/business-day.service';
 import { ApArPostingService } from '../../common/services/apar-posting.service';
+import { CashService } from '../cash/cash.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PricingContextService } from '../pricing/pricing-context.service';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
@@ -55,6 +61,7 @@ export class CreditService {
     private readonly approval: ApprovalService,
     private readonly businessDay: BusinessDayService,
     private readonly apar: ApArPostingService,
+    private readonly cash: CashService,
     private readonly notifications: NotificationsService,
     private readonly pricingContext: PricingContextService,
     private readonly range: HistoryRangeService,
@@ -91,7 +98,13 @@ export class CreditService {
   ) {
     if (owed.eq(0)) {
       if (lines.length === 0 && options?.allowEmptyWhenZero) {
-        return { lines: [], totalLak: dec(0), changeLak: dec(0) };
+        return {
+          lines: [],
+          totalLak: dec(0),
+          changeLak: dec(0),
+          appliedLak: dec(0),
+          remainingLak: dec(0),
+        };
       }
       throw new BadRequestException('ບໍ່ມີຍອດເງິນທີ່ຕ້ອງຮັບ — ບໍ່ຕ້ອງປ້ອນລາຍການຮັບເງິນ');
     }
@@ -102,16 +115,24 @@ export class CreditService {
 
     let lakLegsTotal = dec(0);
     let foreignLakTotal = dec(0);
+    let hasCashLakLeg = false;
 
     const resolved = lines.map((dto) => {
       if (dto.method === 'BANK' && !dto.bankAccountId) {
         throw new BadRequestException('ກະລຸນາເລືອກທະນາຄານ');
       }
 
-      const amount = dec(dto.amount);
-      if (!amount.isFinite() || amount.lte(0)) {
+      const rawAmount = dec(dto.amount);
+      if (!rawAmount.isFinite() || rawAmount.lte(0)) {
         throw new BadRequestException('ຈຳນວນເງິນຕ້ອງໃຫຍ່ກວ່າ 0');
       }
+
+      const isCashLak = dto.method === 'CASH' && dto.currency === 'LAK';
+      const amount = isCashLak ? roundDownCashLak(rawAmount) : rawAmount;
+      if (amount.lte(0)) {
+        throw new BadRequestException('ຈຳນວນເງິນສົດ LAK ຕ້ອງຢ່າງໜ້ອຍ 500 LAK');
+      }
+      if (isCashLak) hasCashLakLeg = true;
 
       const rate = PricingContextService.rateFor(rates, dto.currency, 'sell');
       const amountLak = amount.mul(rate);
@@ -126,9 +147,11 @@ export class CreditService {
     });
 
     const totalLak = resolved.reduce((sum, l) => sum.plus(l.amountLak), dec(0));
-    const change = totalLak.gt(owed) ? totalLak.minus(owed) : dec(0);
+    const rawChange = totalLak.gt(owed) ? totalLak.minus(owed) : dec(0);
+    const settlement = resolveCashLakSettlement(owed, totalLak, hasCashLakLeg);
+    const change = settlement.changeLak;
 
-    if (change.gt(0)) {
+    if (rawChange.gt(0)) {
       if (lakLegsTotal.gt(owed)) {
         throw new BadRequestException(
           `ຈຳນວນເງິນ LAK (${lakLegsTotal.toFixed(0)}) ຕ້ອງບໍ່ເກີນຍອດທີ່ຕ້ອງຮັບ (${owed.toFixed(0)})`,
@@ -163,7 +186,13 @@ export class CreditService {
       }
     }
 
-    return { lines: resolved, totalLak, changeLak: change };
+    return {
+      lines: resolved,
+      totalLak,
+      changeLak: change,
+      appliedLak: settlement.appliedLak,
+      remainingLak: settlement.remainingLak,
+    };
   }
 
   /**
@@ -331,7 +360,7 @@ export class CreditService {
     const receipt = this.resolveReceipts(receiptInputs, context.rates, downPayment, {
       allowEmptyWhenZero: true,
     });
-    if (receipt.totalLak.lt(downPayment)) {
+    if (receipt.remainingLak.gt(0)) {
       throw new BadRequestException(
         `ຮັບເງິນ (${receipt.totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ໜ້ອຍກວ່າເງິນວາງດາວ (${downPayment.toFixed(0)} LAK)`,
       );
@@ -497,7 +526,7 @@ export class CreditService {
     const receipt = this.resolveReceipts(nextReceiptInputs, context.rates, nextDownPayment, {
       allowEmptyWhenZero: true,
     });
-    if (receipt.totalLak.lt(nextDownPayment)) {
+    if (receipt.remainingLak.gt(0)) {
       throw new BadRequestException(
         `ຮັບເງິນ (${receipt.totalLak.toFixed(0)} LAK) ຕ້ອງບໍ່ໜ້ອຍກວ່າເງິນວາງດາວ (${nextDownPayment.toFixed(0)} LAK)`,
       );
@@ -605,14 +634,44 @@ export class CreditService {
     });
     if (!credit) throw new NotFoundException('ບໍ່ພົບລາຍການສິນເຊື່ອ');
 
-    const next: ApprovalStatus = dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
-    this.approval.assertTransition(credit.status, next);
+    const nextDecisionStatus: ApprovalStatus =
+      dto.decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
+    this.approval.assertTransition(credit.status, nextDecisionStatus);
+    const next: ApprovalStatus = dto.decision === 'APPROVED' ? 'COMPLETED' : 'REJECTED';
 
     const day = await this.businessDay.current();
 
     return this.prisma.$transaction(async (tx) => {
       let downApplied = dec(0);
       if (dto.decision === 'APPROVED') {
+        const changeTotalLak = credit.receipts.reduce(
+          (sum, r) => sum.plus(dec(r.changeLak.toFixed())),
+          dec(0),
+        );
+        const touchesCash =
+          credit.receipts.some((r) => r.method === 'CASH') || changeTotalLak.gt(0);
+        const cashShiftId = touchesCash
+          ? await this.cash.resolveCounterCashShiftId({
+              actor: user,
+              openShiftId,
+              client: tx,
+            })
+          : undefined;
+
+        if (touchesCash && !cashShiftId) {
+          throw new BadRequestException(
+            'ກະລຸນາເປີດກະ Payment ກ່ອນຮັບ/ທອນເງິນສົດເຂົ້າກະເປົ໋າເງິນສົດ (To Day)',
+          );
+        }
+        if (changeTotalLak.gt(0)) {
+          await this.cash.assertShiftWalletAndBankFunds(
+            cashShiftId,
+            [{ method: 'CASH', currency: 'LAK', amount: changeTotalLak }],
+            `ເງິນທອນສິນເຊື່ອ ${credit.code}`,
+            { client: tx },
+          );
+        }
+
         for (const receipt of credit.receipts) {
           downApplied = downApplied.plus(
             dec(receipt.amountLak.toFixed()).minus(dec(receipt.changeLak.toFixed())),
@@ -620,7 +679,7 @@ export class CreditService {
           await this.recordReceiptMoney(tx, {
             receipt,
             businessDayId: day.id,
-            shiftId: openShiftId ?? credit.shiftId,
+            shiftId: cashShiftId ?? null,
             note: `ເງິນວາງດາວສິນເຊື່ອ ${credit.code}`,
             changeNote: `ເງິນທອນສິນເຊື່ອ ${credit.code}`,
             refId: credit.id,
@@ -638,14 +697,20 @@ export class CreditService {
         });
       }
 
+      const now = new Date();
       const claim = await tx.goldCredit.updateMany({
         where: { id, status: credit.status, deletedAt: null },
         data: {
           status: next,
           approvedById: user.id,
-          approvedAt: new Date(),
+          approvedAt: now,
           rejectReason: dto.decision === 'REJECTED' ? (dto.reason ?? null) : null,
-          ...(dto.decision === 'APPROVED' ? { paidAmount: D(downApplied) } : {}),
+          ...(dto.decision === 'APPROVED'
+            ? {
+                paidAmount: D(downApplied),
+                ...(dec(credit.outstanding.toFixed()).lte(0) ? { settledAt: now } : {}),
+              }
+            : {}),
         },
       });
       if (claim.count !== 1) {
@@ -811,14 +876,48 @@ export class CreditService {
 
     const context = await this.pricingContext.load();
     const receipt = this.resolveReceipts(receiptInputs, context.rates, outstanding);
-    const applied = receipt.totalLak.minus(receipt.changeLak);
-    const remaining = outstanding.minus(applied);
+    const applied = receipt.appliedLak;
+    const remaining = receipt.remainingLak;
     const day = await this.businessDay.current();
     const settled = remaining.lte(0);
     const nextOutstanding = settled ? dec(0) : remaining;
     const nextPaidAmount = dec(credit.paidAmount.toFixed()).plus(applied);
 
     return this.prisma.$transaction(async (tx) => {
+      const changeTotalLak = receipt.changeLak;
+      const touchesCash =
+        receipt.lines.some((l) => l.method === 'CASH') || changeTotalLak.gt(0);
+      const usesCounterWallet = touchesCash && user.role === 'PAYMENT';
+      const cashShiftId = usesCounterWallet
+        ? await this.cash.resolveCounterCashShiftId({
+            actor: user,
+            openShiftId,
+            preferredUserId: credit.approvedById ?? undefined,
+            client: tx,
+          })
+        : undefined;
+
+      if (usesCounterWallet && !cashShiftId) {
+        throw new BadRequestException(
+          'ກະລຸນາເປີດກະ Payment ກ່ອນຮັບ/ທອນເງິນສົດເຂົ້າກະເປົ໋າເງິນສົດ (To Day)',
+        );
+      }
+      if (changeTotalLak.gt(0)) {
+        if (usesCounterWallet) {
+          await this.cash.assertShiftWalletAndBankFunds(
+            cashShiftId,
+            [{ method: 'CASH', currency: 'LAK', amount: changeTotalLak }],
+            `ເງິນທອນຄ່າງວດສິນເຊື່ອ ${credit.code}`,
+            { client: tx },
+          );
+        } else {
+          await this.cash.assertSufficientFunds(
+            [{ method: 'CASH', currency: 'LAK', amount: changeTotalLak }],
+            `ເງິນທອນຄ່າງວດສິນເຊື່ອ ${credit.code}`,
+          );
+        }
+      }
+
       const claim = await tx.goldCredit.updateMany({
         where: {
           id,
@@ -836,7 +935,7 @@ export class CreditService {
         throw new ConflictException('ຍອດຄ້າງຮັບມີການປ່ຽນແປງແລ້ວ — ກະລຸນາໂຫຼດຄືນ');
       }
 
-      // One row and one cash/bank movement per leg, so Module Cash and
+      // One row and one cash/bank movement per leg, so Payment Wallet and
       // Module Bank each show what actually arrived in them.
       for (const line of receipt.lines) {
         const created = await tx.creditReceipt.create({
@@ -856,7 +955,7 @@ export class CreditService {
         await this.recordReceiptMoney(tx, {
           receipt: created,
           businessDayId: day.id,
-          shiftId: openShiftId ?? null,
+          shiftId: cashShiftId ?? null,
           note: `ຮັບຄ່າງວດສິນເຊື່ອ ${credit.code}`,
           changeNote: `ເງິນທອນຄ່າງວດສິນເຊື່ອ ${credit.code}`,
           refId: credit.id,
@@ -899,11 +998,28 @@ export class CreditService {
     const range = this.range.resolve(query, user);
     const timeWin = this.range.resolveTimeWindow(range, query);
     const q = query.search?.trim();
+    const outstandingOnly =
+      query.outstandingOnly === 'true' ||
+      query.outstandingOnly === '1' ||
+      query.outstanding_only === 'true' ||
+      query.outstanding_only === '1';
+    const hasExplicitDate = Boolean(
+      query.from_date ?? query.fromDate ?? query.to_date ?? query.toDate,
+    );
 
     const where: Prisma.GoldCreditWhereInput = {
       deletedAt: null,
-      createdAt: timeWin ?? HistoryRangeService.window(range),
-      ...(status ? { status } : {}),
+      ...(outstandingOnly && user?.role !== 'VALUER' && !hasExplicitDate && !timeWin
+        ? {}
+        : { createdAt: timeWin ?? HistoryRangeService.window(range) }),
+      ...(outstandingOnly
+        ? {
+            status: status ?? { in: ['APPROVED', 'COMPLETED'] },
+            outstanding: { gt: 0 },
+          }
+        : status
+          ? { status }
+          : {}),
       ...(q
         ? {
             OR: [

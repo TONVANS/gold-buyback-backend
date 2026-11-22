@@ -46,6 +46,14 @@ export class ListCreditDto extends TimeSearchHistoryRangeDto {
   @IsOptional()
   @IsIn(['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'])
   status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
+
+  @IsOptional()
+  @IsIn(['true', 'false', '1', '0'])
+  outstandingOnly?: string;
+
+  @IsOptional()
+  @IsIn(['true', 'false', '1', '0'])
+  outstanding_only?: string;
 }
 
 export class CreditLineDto {

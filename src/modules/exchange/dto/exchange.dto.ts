@@ -38,8 +38,8 @@ export class ExchangeOldLineDto {
   @IsOptional() @IsString() goldItemId?: string;
   @IsDecimalString({ labelLo: 'ນ້ຳໜັກ' }) weightG: string;
   @IsInt() @Min(1) quantity: number;
-  /** ເກນນ້ຳໜັກ standard — the weight the piece left the shop at. */
-  @IsDecimalString({ labelLo: 'ເກນນ້ຳໜັກ' }) standardWeightG: string;
+  /** ເກນນ້ຳໜັກ standard — derived server-side from goldTypeId + weightG. */
+  @IsOptional() @IsDecimalString({ labelLo: 'ເກນນ້ຳໜັກ' }) standardWeightG?: string;
 }
 
 export class ExchangeNewLineDto {

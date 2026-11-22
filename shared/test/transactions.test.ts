@@ -2,21 +2,28 @@ import { describe, it, expect } from 'vitest';
 import { buildPriceBoard } from '../src/pricing.js';
 import { GRAMS_PER_BAHT, TIER_META, TierCode } from '../src/constants.js';
 import { dec, trimTrailingZeros } from '../src/decimal.js';
+import { resolveBuybackLakSettlement, resolveCashLakSettlement, roundDownCashLak } from '../src/rounding.js';
 import {
   calculateBuyback,
+  computeHumpSoftGoldDeduction,
   lookupExact,
   makePriceTable,
   payableBoiled,
   shopBuybackPriceBoiled,
   shopBuybackPriceKpv,
+  softGoldStepsBuyback,
   type BuybackGoldKind,
   type BuybackPriceSource,
   type PriceTableEntry,
 } from '../src/buyback.js';
 import {
   calculateExchange,
+  deriveOldStandardWeight,
+  exchangeRemainingBuybackPrice,
+  resolveConversionFeeForWeight,
   softGoldFeeForLine,
   softGoldSteps,
+  splitWeightIntoExchangeTiers,
   validateExchangeBalance,
 } from '../src/exchange.js';
 import {
@@ -119,38 +126,94 @@ describe('TOR §5.1 — ລາຄາຊື້ຄືນໜ້າຮ້ານ, ຄ
   });
 });
 
-describe('TOR §5.1 — ລາຄາທີ່ຕ້ອງຈ່າຍ', () => {
-  it('deducts ຄ່າອ່ອນ per piece, then multiplies by quantity', () => {
+describe('TOR §5.1 — ລາຄາທີ່ຕ້ອງຈ່າຍ & ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ', () => {
+  const DISPLAY_TABLE: PriceTableEntry[] = makePriceTable(
+    (
+      [
+        TierCode.JW_BAHT_1,
+        TierCode.JW_SALEUNG_2,
+        TierCode.JW_SALEUNG_1,
+        TierCode.JW_HUN_5,
+        TierCode.JW_HUN_3,
+        TierCode.JW_HUN_2,
+        TierCode.JW_HUN_1,
+      ] as const
+    ).map((tier) => ({
+      tierCode: tier,
+      weightG: TIER_META[tier].displayWeightG,
+      buybackPrice: board.buyback[tier]!,
+    })),
+  );
+
+  it('auto-computes ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ for ຄຳຫຍຸບ only and multiplies by quantity', () => {
+    // 14.99 g -> full 15 g, shortfall 0.01 g -> 0.1 g step -> 400,000 per piece
     const result = calculateBuyback(
-      { kind: 'GOOD', weightG: 15, quantity: 3, deduction: 400_000 },
+      { kind: 'HUMP', weightG: '14.99', quantity: 3, softGoldFeePerUnit: 400_000 },
       SOURCE,
-      TABLE,
+      DISPLAY_TABLE,
     );
     expect(result.shopBuybackPrice.toNumber()).toBe(JW_1_BAHT);
+    expect(result.deduction.toNumber()).toBe(400_000);
     expect(result.payableAmount.toNumber()).toBe((JW_1_BAHT - 400_000) * 3);
+  });
+
+  it('rounds even tiny shortfalls like 0.003 g UP to 0.1 g (1 step)', () => {
+    expect(softGoldStepsBuyback('0.003').toNumber()).toBe(1);
+    expect(softGoldStepsBuyback('0.1').toNumber()).toBe(1);
+    expect(softGoldStepsBuyback('0.101').toNumber()).toBe(2);
+
+    const tiny = computeHumpSoftGoldDeduction('14.997', 400_000, DISPLAY_TABLE);
+    expect(tiny.fullWeightG.toNumber()).toBe(15);
+    expect(tiny.shortfallG.toFixed(3)).toBe('0.003');
+    expect(tiny.deduction.toNumber()).toBe(400_000);
+
+    // 5H display weight (1.87 g) has 0 shortfall; 1.867 g (0.003 short) pays 1 step
+    expect(computeHumpSoftGoldDeduction('1.87', 400_000, DISPLAY_TABLE).deduction.toNumber()).toBe(0);
+    expect(computeHumpSoftGoldDeduction('1.867', 400_000, DISPLAY_TABLE).deduction.toNumber()).toBe(400_000);
+
+    // > 15 g rounds up to next 15 g multiple (e.g. 29.89 -> 30, shortfall 0.11 -> 2 steps = 800,000)
+    expect(computeHumpSoftGoldDeduction('29.89', 400_000, DISPLAY_TABLE).deduction.toNumber()).toBe(800_000);
+  });
+
+  it('applies zero deduction for ຄຳດີ and ຄຳແທ່ງ even if deduction is passed', () => {
+    const good = calculateBuyback(
+      { kind: 'GOOD', weightG: 15, quantity: 2, deduction: 400_000, softGoldFeePerUnit: 400_000 },
+      SOURCE,
+      DISPLAY_TABLE,
+    );
+    expect(good.deduction.toNumber()).toBe(0);
+    expect(good.payableAmount.toNumber()).toBe(JW_1_BAHT * 2);
+
+    const bar = calculateBuyback(
+      { kind: 'BAR', weightG: 15, quantity: 1, deduction: 400_000, softGoldFeePerUnit: 400_000 },
+      SOURCE,
+      DISPLAY_TABLE,
+    );
+    expect(bar.deduction.toNumber()).toBe(0);
+    expect(bar.payableAmount.toNumber()).toBe(BAR_1_BAHT);
   });
 
   it('never pays a negative amount', () => {
     const result = calculateBuyback(
-      { kind: 'GOOD', weightG: '0.375', quantity: 1, deduction: 99_999_999 },
+      { kind: 'HUMP', weightG: '0.375', quantity: 1, softGoldFeePerUnit: 99_999_999 },
       SOURCE,
-      TABLE,
+      DISPLAY_TABLE,
     );
     expect(result.payableAmount.toNumber()).toBe(0);
   });
 });
 
 describe('TOR §5.1 — ຄຳຮ້ານອື່ນ (ຄຳຕົ້ມ)', () => {
-  it('prices over 1 baht by CEILING(ນ້ຳໜັກ/15, 1)', () => {
-    // 20 g -> CEILING(1.333, 1) = 2 -> 2 x Price1Baht
-    expect(shopBuybackPriceBoiled(20, SOURCE, TABLE).price.toNumber()).toBe(JW_1_BAHT * 2);
+  it('always quotes ລາຄາຊື້ຄືນ ຮູບປະພັນ-1ບາດ', () => {
+    expect(shopBuybackPriceBoiled(20, SOURCE, TABLE).price.toNumber()).toBe(JW_1_BAHT);
+    expect(shopBuybackPriceBoiled('1.87', SOURCE, TABLE).price.toNumber()).toBe(JW_1_BAHT);
   });
 
-  it('applies %ຄຳ and ROUNDDOWN to the nearest 1,000', () => {
-    // w=20, shop=2*44,667,000=89,334,000, CEILING(20,15)=30, 96%
-    // (20 * 89,334,000) / 30 * 0.96 = 57,173,760 -> ROUNDDOWN(-3) = 57,173,000
-    const payable = payableBoiled(20, JW_1_BAHT * 2, 96, 1);
-    expect(payable.toNumber()).toBe(57_173_000);
+  it('calculates weight * % / 15 * Price1Baht and ROUNDDOWN to the nearest 1,000', () => {
+    // 20 * 0.96 / 15 * 44,667,000 = 57,173,760 -> ROUNDDOWN(-3) = 57,173,000
+    expect(payableBoiled(20, JW_1_BAHT, 96, 1).toNumber()).toBe(57_173_000);
+    // 1.87 * 0.99 / 15 * 44,667,000 = 5,512,801.14 -> ROUNDDOWN(-3) = 5,512,000
+    expect(payableBoiled('1.87', JW_1_BAHT, 99, 1).toNumber()).toBe(5_512_000);
   });
 
   it('rounds DOWN rather than to nearest, so the shop never overpays', () => {
@@ -301,6 +364,147 @@ describe('TOR §5.2 — ລວມເງິນຕ້ອງຈ່າຍ', () => {
     expect(totals.barConvertFee.toNumber()).toBe(0);
     expect(totals.patternFee.toNumber()).toBe(0);
     expect(totals.totalPayable.toNumber()).toBe(44_667_000);
+  });
+});
+
+describe('TOR §5.2 — Excel workbook rules (ປ່ຽນເປັນເງິນ)', () => {
+  it('derives standard weights and validates GOOD / BAR / HUMP old gold like Excel F9/B46', () => {
+    const hump29 = deriveOldStandardWeight('HUMP', '29.89');
+    expect(hump29.valid).toBe(true);
+    expect(hump29.standardWeightG.toNumber()).toBe(30);
+    expect(hump29.softGoldStandardG.toNumber()).toBe(30);
+
+    // 5H (1.87 display / 1.875 exchange): 1.765 g uses 1.87 for soft gold (1 step = 400k)
+    const hump5h = deriveOldStandardWeight('HUMP', '1.765');
+    expect(hump5h.valid).toBe(true);
+    expect(hump5h.standardWeightG.toNumber()).toBe(1.875);
+    expect(hump5h.softGoldStandardG.toNumber()).toBe(1.87);
+    expect(
+      softGoldFeeForLine(
+        {
+          weightG: '1.765',
+          quantity: 1,
+          standardWeightG: hump5h.standardWeightG,
+          softGoldStandardG: hump5h.softGoldStandardG,
+          goldKind: 'HUMP',
+        },
+        400_000,
+      ).toNumber(),
+    ).toBe(400_000);
+
+    // GOOD must match a jewellery tier or multiple of 15 g
+    expect(deriveOldStandardWeight('GOOD', '29.89').valid).toBe(false);
+    expect(deriveOldStandardWeight('GOOD', '30').valid).toBe(true);
+    const good5h = deriveOldStandardWeight('GOOD', '1.87');
+    expect(good5h.valid).toBe(true);
+    expect(good5h.standardWeightG.toNumber()).toBe(1.875);
+
+    // BAR must match 1 / 3.75 / 7.5 or multiple of 15 g
+    expect(deriveOldStandardWeight('BAR', '1.875').valid).toBe(false);
+    expect(deriveOldStandardWeight('BAR', '20').valid).toBe(false);
+    expect(deriveOldStandardWeight('BAR', '1').valid).toBe(true);
+    expect(deriveOldStandardWeight('BAR', '30').valid).toBe(true);
+  });
+
+  it('prices remaining old gold using exact tier match rather than CEILING/lookupAtLeast', () => {
+    expect(exchangeRemainingBuybackPrice('HUMP', '3.75', SOURCE)?.toNumber()).toBe(11_148_000);
+    expect(exchangeRemainingBuybackPrice('HUMP', '1.875', SOURCE)?.toNumber()).toBe(5_530_000);
+    expect(exchangeRemainingBuybackPrice('HUMP', '30', SOURCE)?.toNumber()).toBe(JW_1_BAHT * 2);
+
+    // Non-tier weights must NOT round up to the next tier (Excel D32:D41 yields 0)
+    expect(exchangeRemainingBuybackPrice('HUMP', '5.625', SOURCE)).toBeNull();
+    expect(exchangeRemainingBuybackPrice('HUMP', '20', SOURCE)).toBeNull();
+    expect(exchangeRemainingBuybackPrice('HUMP', '14.99', SOURCE)).toBeNull();
+
+    // BAR tiers
+    const barTable = makePriceTable(
+      (
+        [
+          TierCode.BAR_BAHT_1,
+          TierCode.BAR_SALEUNG_2,
+          TierCode.BAR_SALEUNG_1,
+          TierCode.BAR_GRAM_1,
+        ] as const
+      ).map((tier) => ({
+        tierCode: tier,
+        weightG: TIER_META[tier].displayWeightG,
+        buybackPrice: board.buyback[tier]!,
+      })),
+    );
+    const barSource: BuybackPriceSource = {
+      price1BahtFor: SOURCE.price1BahtFor,
+      lookup: (kind, weightG) =>
+        lookupExact(kind === 'BAR' ? barTable : TABLE, weightG),
+    };
+    expect(exchangeRemainingBuybackPrice('BAR', '7.5', barSource)?.toNumber()).toBe(22_610_000);
+    expect(exchangeRemainingBuybackPrice('BAR', '3.75', barSource)?.toNumber()).toBe(11_305_000);
+    expect(exchangeRemainingBuybackPrice('BAR', '1', barSource)?.toNumber()).toBe(3_014_000);
+    expect(exchangeRemainingBuybackPrice('BAR', '1.875', barSource)).toBeNull();
+  });
+
+  it('splits a remaining weight difference into standard tiers from largest to smallest', () => {
+    const jw = splitWeightIntoExchangeTiers('5.625', 'HUMP');
+    expect(jw.tiers.map((t) => t.toNumber())).toEqual([3.75, 1.875]);
+    expect(jw.remainder.toNumber()).toBe(0);
+
+    const bar = splitWeightIntoExchangeTiers('11.25', 'BAR');
+    expect(bar.tiers.map((t) => t.toNumber())).toEqual([7.5, 3.75]);
+    expect(bar.remainder.toNumber()).toBe(0);
+  });
+
+  it('scales conversion fees for new gold > 15 g and rejects non-multiples of 15 g', () => {
+    const feeMap = new Map([
+      ['15', dec(269_000)],
+      ['1.875', dec(94_000)],
+    ]);
+    const res30 = resolveConversionFeeForWeight('30', (k) => feeMap.get(k));
+    expect(res30.valid).toBe(true);
+    expect(res30.fee.toNumber()).toBe(538_000);
+
+    const res20 = resolveConversionFeeForWeight('20', (k) => feeMap.get(k));
+    expect(res20.valid).toBe(false);
+
+    const res5h = resolveConversionFeeForWeight('1.87', (k) => feeMap.get(k));
+    expect(res5h.valid).toBe(true);
+    expect(res5h.fee.toNumber()).toBe(94_000);
+  });
+
+  it('reproduces the exact 14,666,000 LAK workbook example (ປ່ຽນເປັນເງິນ!D45)', () => {
+    const oldDerived = deriveOldStandardWeight('HUMP', '29.89');
+    const rem1 = exchangeRemainingBuybackPrice('HUMP', '3.75', SOURCE)!;
+    const rem2 = exchangeRemainingBuybackPrice('HUMP', '1.875', SOURCE)!;
+
+    const totals = calculateExchange({
+      txnType: 'EXCHANGE_TO_CASH',
+      shapeCondition: 'GOOD',
+      softGoldFeePerGram: 400_000,
+      oldLines: [
+        {
+          weightG: '29.89',
+          quantity: 1,
+          standardWeightG: oldDerived.standardWeightG,
+          softGoldStandardG: oldDerived.softGoldStandardG,
+          goldKind: 'HUMP',
+          shopBuybackPrice: 0,
+        },
+      ],
+      newLines: [
+        { weightG: 15, quantity: 1, humpFee: 269_000, barConvertFee: 0, patternFee: 250_000 },
+        { weightG: '7.5', quantity: 1, humpFee: 199_000, barConvertFee: 0, patternFee: 200_000 },
+        { weightG: '1.875', quantity: 1, humpFee: 94_000, barConvertFee: 0, patternFee: 200_000 },
+      ],
+      remainingLines: [
+        { weightG: '3.75', quantity: 1, shopBuybackPrice: rem1 },
+        { weightG: '1.875', quantity: 1, shopBuybackPrice: rem2 },
+      ],
+    });
+
+    expect(validateExchangeBalance(totals).isBalanced).toBe(true);
+    expect(totals.softGoldFee.toNumber()).toBe(800_000);
+    expect(totals.humpFee.toNumber()).toBe(562_000);
+    expect(totals.patternFee.toNumber()).toBe(650_000);
+    expect(totals.shopBuybackPrice.toNumber()).toBe(16_678_000);
+    expect(totals.totalPayable.toNumber()).toBe(14_666_000);
   });
 });
 
@@ -787,5 +991,74 @@ describe('cross-engine consistency', () => {
     // display weight would silently miss and price the gold at zero.
     expect(lookupExact(TABLE, dec('1.875'))!.toNumber()).toBe(5_530_000);
     expect(lookupExact(TABLE, dec('1.87'))).toBeNull();
+  });
+});
+
+describe('CASH LAK 500-kip rounding', () => {
+  it('rounds 0..499 down to 0 and 500..999 down to 500', () => {
+    expect(roundDownCashLak(128_000).toNumber()).toBe(128_000);
+    expect(roundDownCashLak(128_300).toNumber()).toBe(128_000);
+    expect(roundDownCashLak(128_499).toNumber()).toBe(128_000);
+    expect(roundDownCashLak(128_500).toNumber()).toBe(128_500);
+    expect(roundDownCashLak(128_501).toNumber()).toBe(128_500);
+    expect(roundDownCashLak(128_999).toNumber()).toBe(128_500);
+    expect(roundDownCashLak(300).toNumber()).toBe(0);
+  });
+
+  it('waives < 500 LAK shortfall when a CASH LAK leg is present and rounds cash change down to 500', () => {
+    // 128,300 owed, paid 128,000 CASH LAK -> settled (remaining = 0, applied = 128,300)
+    const s1 = resolveCashLakSettlement(128_300, 128_000, true);
+    expect(s1.cashRounded).toBe(true);
+    expect(s1.remainingLak.toNumber()).toBe(0);
+    expect(s1.appliedLak.toNumber()).toBe(128_300);
+
+    // 128,900 owed, paid 128,500 CASH LAK -> settled
+    const s2 = resolveCashLakSettlement(128_900, 128_500, true);
+    expect(s2.cashRounded).toBe(true);
+    expect(s2.remainingLak.toNumber()).toBe(0);
+
+    // 128,900 owed, paid 128,000 CASH LAK -> shortfall 900 >= 500, NOT settled
+    const s3 = resolveCashLakSettlement(128_900, 128_000, true);
+    expect(s3.cashRounded).toBe(false);
+    expect(s3.remainingLak.toNumber()).toBe(900);
+
+    // BANK-only (no CASH LAK leg) -> shortfall 300 is NOT waived
+    const s4 = resolveCashLakSettlement(128_300, 128_000, false);
+    expect(s4.cashRounded).toBe(false);
+    expect(s4.remainingLak.toNumber()).toBe(300);
+
+    // Cash change rounds down to nearest 500 LAK
+    const c1 = resolveCashLakSettlement(100_000, 228_300, false);
+    expect(c1.changeLak.toNumber()).toBe(128_000);
+    expect(c1.appliedLak.toNumber()).toBe(100_000);
+    const c2 = resolveCashLakSettlement(100_000, 228_900, false);
+    expect(c2.changeLak.toNumber()).toBe(128_500);
+    const c3 = resolveCashLakSettlement(100_000, 100_300, false);
+    expect(c3.changeLak.toNumber()).toBe(0);
+  });
+
+  it('resolveBuybackLakSettlement waives < 500 and rounds 501..999 down to 500 for ALL currencies/methods', () => {
+    // Shortfall 300 LAK (< 500) -> 0 remaining
+    const b1 = resolveBuybackLakSettlement(10_000_000, 9_999_700);
+    expect(b1.cashRounded).toBe(true);
+    expect(b1.remainingLak.toNumber()).toBe(0);
+    expect(b1.appliedLak.toNumber()).toBe(10_000_000);
+
+    // Shortfall 700 LAK (501..999) -> 500 remaining
+    const b2 = resolveBuybackLakSettlement(10_000_000, 9_999_300);
+    expect(b2.cashRounded).toBe(true);
+    expect(b2.remainingLak.toNumber()).toBe(500);
+    expect(b2.appliedLak.toNumber()).toBe(9_999_500);
+
+    // Shortfall 500 LAK -> stays 500
+    const b3 = resolveBuybackLakSettlement(10_000_000, 9_999_500);
+    expect(b3.cashRounded).toBe(false);
+    expect(b3.remainingLak.toNumber()).toBe(500);
+
+    // Shortfall 1,200 LAK -> 1,000 remaining
+    const b4 = resolveBuybackLakSettlement(10_000_000, 9_998_800);
+    expect(b4.cashRounded).toBe(true);
+    expect(b4.remainingLak.toNumber()).toBe(1_000);
+    expect(b4.appliedLak.toNumber()).toBe(9_999_000);
   });
 });

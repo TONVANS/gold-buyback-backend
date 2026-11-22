@@ -1,4 +1,7 @@
 import { Decimal, dec, trimTrailingZeros, type Numeric } from './decimal.js';
+import { ceilingTo, isMultipleOf } from './rounding.js';
+import { GRAMS_PER_BAHT } from './constants.js';
+import type { BuybackGoldKind, BuybackPriceSource } from './buyback.js';
 
 /* ------------------------------------------------------------------ *
  * TOR §5.2 — ລາຍການປ່ຽນເປັນເງິນ (Gold Exchange & Trade-in)
@@ -16,6 +19,11 @@ export interface ExchangeOldLine {
   quantity: Numeric;
   /** ເກນນ້ຳໜັກ standard for this item — the weight it left the shop at. */
   standardWeightG: Numeric;
+  /**
+   * Optional display-weight standard used by `ປ່ຽນເປັນເງິນ!F9` (e.g. 1.87 for 5H).
+   * Falls back to `standardWeightG` when omitted.
+   */
+  softGoldStandardG?: Numeric;
   /**
    * ປະເພດຄຳ. Omitted lines are treated as ຄຳຫຍຸບ, which is the only kind the
    * shop charges ຄ່າອ່ອນ on and the only kind this fee was ever written for.
@@ -107,11 +115,247 @@ const sum = (values: Decimal[]): Decimal =>
  * `C7` is the ຄ່າອ່ອນ cell on the workbook's ຄ່າອ່ອນ sheet — the current value,
  * 400,000 — so the parameter keeps that meaning.
  */
+/**
+ * Exchange weight tiers (Produets column C / B) ordered descending.
+ *
+ * Jewellery tiers carry both the printed display weight (`1.87`, `1.12`, `0.37` —
+ * Produets column B, used by `ປ່ຽນເປັນເງິນ!F9` for `ຄ່າອ່ອນ`) and the exact
+ * exchange weight (`1.875`, `1.125`, `0.375` — Produets column C, used by
+ * `ປ່ຽນເປັນເງິນ!B46` for the weight balance).
+ */
+export const JEWELRY_EXCHANGE_TIERS: readonly {
+  displayG: Decimal;
+  exchangeG: Decimal;
+}[] = [
+  { displayG: dec('15'), exchangeG: dec('15') },
+  { displayG: dec('7.5'), exchangeG: dec('7.5') },
+  { displayG: dec('3.75'), exchangeG: dec('3.75') },
+  { displayG: dec('1.87'), exchangeG: dec('1.875') },
+  { displayG: dec('1.12'), exchangeG: dec('1.125') },
+  { displayG: dec('0.75'), exchangeG: dec('0.75') },
+  { displayG: dec('0.37'), exchangeG: dec('0.375') },
+];
+
+export const BAR_EXCHANGE_WEIGHTS: readonly Decimal[] = [
+  dec('15'),
+  dec('7.5'),
+  dec('3.75'),
+  dec('1'),
+];
+
+const DISPLAY_TO_EXCHANGE: Record<string, string> = {
+  '1.87': '1.875',
+  '1.12': '1.125',
+  '0.37': '0.375',
+};
+
+export interface OldStandardDerivation {
+  valid: boolean;
+  /** Standard weight used for the §5.2 zero-balance check (`ປ່ຽນເປັນເງິນ!B46`). */
+  standardWeightG: Decimal;
+  /** Standard weight used for `ຄ່າອ່ອນ` (`ປ່ຽນເປັນເງິນ!F9`). */
+  softGoldStandardG: Decimal;
+  errorLo?: string;
+}
+
+/**
+ * Derive and validate the standard weight of an old gold line directly from
+ * its `goldKind` and actual `weightG`, matching `ປ່ຽນເປັນເງິນ!F9` and `B46`.
+ *
+ * - `GOOD` (ຄຳດີ): must match a jewellery tier (or a multiple of 15 g); no ຄ່າອ່ອນ.
+ * - `BAR`  (ຄຳແທ່ງ): must match 1 / 3.75 / 7.5 g or a multiple of 15 g; no ຄ່າອ່ອນ.
+ * - `HUMP` (ຄຳຫຍຸບ): rounds up to `CEILING(w, 15)` when > 15 g, or the smallest
+ *   jewellery tier >= w when <= 15 g.
+ */
+export function deriveOldStandardWeight(
+  kind: Exclude<ExchangeGoldKind, 'BOILED'>,
+  weightG: Numeric,
+): OldStandardDerivation {
+  const w = dec(weightG);
+  if (!w.isFinite() || w.lte(0)) {
+    return {
+      valid: false,
+      standardWeightG: dec(0),
+      softGoldStandardG: dec(0),
+      errorLo: 'ນ້ຳໜັກຄຳເກົ່າຕ້ອງໃຫຍ່ກວ່າ 0',
+    };
+  }
+
+  if (kind === 'GOOD') {
+    if (w.gt(GRAMS_PER_BAHT)) {
+      if (!isMultipleOf(w, GRAMS_PER_BAHT)) {
+        return {
+          valid: false,
+          standardWeightG: dec(0),
+          softGoldStandardG: dec(0),
+          errorLo: 'ບໍ່ຕົງຕາມເງືອນໄຂ — ນ້ຳໜັກຄຳດີເກີນ 15g ຕ້ອງຫານ 15 ລົງໂຕ',
+        };
+      }
+      return { valid: true, standardWeightG: w, softGoldStandardG: w };
+    }
+    const hit = JEWELRY_EXCHANGE_TIERS.find(
+      (t) => t.exchangeG.eq(w) || t.displayG.eq(w),
+    );
+    if (!hit) {
+      return {
+        valid: false,
+        standardWeightG: dec(0),
+        softGoldStandardG: dec(0),
+        errorLo: 'ບໍ່ຕົງຕາມເງືອນໄຂ — ນ້ຳໜັກຄຳດີຕ້ອງຕົງຕາມເກນ (15, 7.5, 3.75, 1.875, 1.125, 0.75, 0.375)',
+      };
+    }
+    return { valid: true, standardWeightG: hit.exchangeG, softGoldStandardG: hit.exchangeG };
+  }
+
+  if (kind === 'BAR') {
+    if (w.gte(GRAMS_PER_BAHT)) {
+      if (!isMultipleOf(w, GRAMS_PER_BAHT)) {
+        return {
+          valid: false,
+          standardWeightG: dec(0),
+          softGoldStandardG: dec(0),
+          errorLo: 'ບໍ່ຕົງຕາມເງືອນໄຂ — ນ້ຳໜັກຄຳແທ່ງ ≥ 15g ຕ້ອງຫານ 15 ລົງໂຕ',
+        };
+      }
+      return { valid: true, standardWeightG: w, softGoldStandardG: w };
+    }
+    const hit = BAR_EXCHANGE_WEIGHTS.find((bw) => bw.eq(w));
+    if (!hit) {
+      return {
+        valid: false,
+        standardWeightG: dec(0),
+        softGoldStandardG: dec(0),
+        errorLo: 'ບໍ່ຕົງຕາມເງືອນໄຂ — ນ້ຳໜັກຄຳແທ່ງຕ້ອງເປັນ 1g, 3.75g, 7.5g ຫຼື ຫານ 15 ລົງໂຕ',
+      };
+    }
+    return { valid: true, standardWeightG: hit, softGoldStandardG: hit };
+  }
+
+  // HUMP (ຄຳຫຍຸບ)
+  if (w.gt(GRAMS_PER_BAHT)) {
+    const std = ceilingTo(w, GRAMS_PER_BAHT);
+    return { valid: true, standardWeightG: std, softGoldStandardG: std };
+  }
+
+  // Smallest tier with exchangeG >= w. Note that for display weights like 1.80g,
+  // Excel F9 compares against displayG (1.87), whereas if someone enters exact
+  // exchange weight (e.g. 1.875) no soft-gold penalty is owed.
+  let matched = JEWELRY_EXCHANGE_TIERS[0]!;
+  for (let i = JEWELRY_EXCHANGE_TIERS.length - 1; i >= 0; i--) {
+    const tier = JEWELRY_EXCHANGE_TIERS[i]!;
+    if (tier.exchangeG.gte(w)) {
+      matched = tier;
+      break;
+    }
+  }
+  const softStd = w.lte(matched.displayG) ? matched.displayG : matched.exchangeG;
+  return { valid: true, standardWeightG: matched.exchangeG, softGoldStandardG: softStd };
+}
+
+/**
+ * ລາຄາຊື້ຄືນໜ້າຮ້ານ for `ຄຳເກົ່າຄົງເຫຼືອ` (`ປ່ຽນເປັນເງິນ!D32:D41`).
+ *
+ * Unlike counter buyback (§5.1), `ຄຳເກົ່າຄົງເຫຼືອ` in §5.2 NEVER rounds up a
+ * non-tier weight via CEILING / lookupAtLeast: every remaining piece must match
+ * an exact tier (or a multiple of 15 g), otherwise it returns `null` (`0` in Excel).
+ */
+export function exchangeRemainingBuybackPrice(
+  kind: Exclude<BuybackGoldKind, 'BOILED'>,
+  weightG: Numeric,
+  source: BuybackPriceSource,
+): Decimal | null {
+  const w = dec(weightG);
+  if (!w.isFinite() || w.lte(0)) return null;
+
+  if (kind === 'BAR') {
+    if (w.gte(GRAMS_PER_BAHT)) {
+      if (!isMultipleOf(w, GRAMS_PER_BAHT)) return null;
+      return w.div(GRAMS_PER_BAHT).mul(source.price1BahtFor('BAR'));
+    }
+    return source.lookup('BAR', w);
+  }
+
+  // GOOD and HUMP share the exact-match rule in ປ່ຽນເປັນເງິນ!D32:D41.
+  if (w.gt(GRAMS_PER_BAHT)) {
+    if (!isMultipleOf(w, GRAMS_PER_BAHT)) return null;
+    return w.div(GRAMS_PER_BAHT).mul(source.price1BahtFor(kind));
+  }
+  const hit = JEWELRY_EXCHANGE_TIERS.find(
+    (t) => t.exchangeG.eq(w) || t.displayG.eq(w),
+  );
+  if (!hit) return null;
+  return source.lookup(kind, hit.displayG) ?? source.lookup(kind, hit.exchangeG);
+}
+
+/**
+ * Split a remaining weight difference (e.g. `5.625 g`) into exact standard tiers
+ * from largest to smallest (e.g. `[3.75, 1.875]`), so each remaining line can
+ * be priced cleanly via `exchangeRemainingBuybackPrice`.
+ */
+export function splitWeightIntoExchangeTiers(
+  weightG: Numeric,
+  kind: Exclude<ExchangeGoldKind, 'BOILED'> = 'HUMP',
+): { tiers: Decimal[]; remainder: Decimal } {
+  let rem = dec(weightG).toDecimalPlaces(4);
+  if (!rem.isFinite() || rem.lte(0)) return { tiers: [], remainder: dec(0) };
+
+  const palette =
+    kind === 'BAR'
+      ? BAR_EXCHANGE_WEIGHTS
+      : JEWELRY_EXCHANGE_TIERS.map((t) => t.exchangeG);
+
+  const tiers: Decimal[] = [];
+  for (const tierWeight of palette) {
+    while (rem.gte(tierWeight)) {
+      tiers.push(tierWeight);
+      rem = rem.minus(tierWeight).toDecimalPlaces(4);
+    }
+  }
+  return { tiers, remainder: rem };
+}
+
+/**
+ * Normalise a printed display weight (`1.87`, `1.12`, `0.37`) to its exact
+ * exchange key (`1.875`, `1.125`, `0.375`) for conversion fee lookups.
+ */
+export function normalizeExchangeWeightKey(weightG: Numeric): string {
+  const raw = dec(weightG).toFixed();
+  return DISPLAY_TO_EXCHANGE[raw] ?? raw;
+}
+
+/**
+ * Resolve a conversion fee (`ຄ່າຫຍຸບ` or `ຄ່າປ່ຽນຄຳແທ່ງ`) for a single new-gold
+ * line, matching `ປ່ຽນເປັນເງິນ!E16` / `F16`:
+ * - Weights > 15 g must be a multiple of 15 g and scale linearly from the 15 g fee.
+ * - Weights <= 15 g look up the exact weight key.
+ */
+export function resolveConversionFeeForWeight(
+  weightG: Numeric,
+  feeAtWeight: (key: string) => Decimal | undefined,
+): { valid: boolean; fee: Decimal } {
+  const w = dec(weightG);
+  if (!w.isFinite() || w.lte(0)) return { valid: false, fee: dec(0) };
+
+  if (w.gt(GRAMS_PER_BAHT)) {
+    if (!isMultipleOf(w, GRAMS_PER_BAHT)) {
+      return { valid: false, fee: dec(0) };
+    }
+    const baseFee = feeAtWeight('15');
+    return {
+      valid: true,
+      fee: baseFee ? baseFee.mul(w.div(GRAMS_PER_BAHT)) : dec(0),
+    };
+  }
+
+  const fee = feeAtWeight(normalizeExchangeWeightKey(w));
+  return { valid: true, fee: fee ?? dec(0) };
+}
+
 export function softGoldFeeForLine(line: ExchangeOldLine, softGoldFee: Numeric): Decimal {
   const kind = line.goldKind ?? 'HUMP';
   if (kind !== 'HUMP') return dec(0);
 
-  const standard = dec(line.standardWeightG);
+  const standard = dec(line.softGoldStandardG ?? line.standardWeightG);
   const actual = dec(line.weightG);
   const shortfall = standard.minus(actual);
   if (shortfall.lte(0)) return dec(0);

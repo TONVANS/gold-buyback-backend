@@ -352,9 +352,10 @@ export class LedgerService {
       ? new Date(`${cleanDate}T00:00:00.000Z`)
       : (day?.date ?? BusinessDayService.toDateOnly());
 
-    const [cashBalances, bankBalances, apAr, goldSummary, wacPosition, advanceNet] =
+    const [cashBalances, openWalletTotals, bankBalances, apAr, goldSummary, wacPosition, advanceNet] =
       await Promise.all([
         this.cash.cashBalances(asOf),
+        this.cash.openShiftWalletTotals(asOf),
         this.cash.bankBalances(asOf),
         // ມື້ທີ່ບໍ່ເຄີຍເປີດ: ສົ່ງ id ທີ່ບໍ່ກົງກັບແຖວໃດ ແລ້ວໄດ້ຍອດ 0 ຜ່ານເສັ້ນທາງດຽວກັນ.
         this.cashApAr(day ?? { id: '—', date: asOf }),
@@ -363,7 +364,12 @@ export class LedgerService {
         this.advance.netByCurrency(this.prisma, asOf),
       ]);
 
-    const cashByCurrency = new Map(cashBalances.map((b) => [b.currency, dec(b.balance)]));
+    const cashByCurrency = new Map(
+      cashBalances.map((b) => [
+        b.currency,
+        dec(b.balance).plus(openWalletTotals[b.currency] ?? dec(0)),
+      ]),
+    );
 
     const bankAccounts = Array.from(
       new Map(

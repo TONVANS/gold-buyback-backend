@@ -1,5 +1,5 @@
-import { dec, type Decimal, type Numeric } from './decimal.js';
-import { ceilingTo, floorTo, isMultipleOf, roundDown } from './rounding.js';
+import { Decimal, dec, type Numeric } from './decimal.js';
+import { ceilingTo, isMultipleOf, roundDown } from './rounding.js';
 import { GRAMS_PER_BAHT } from './constants.js';
 
 /* ------------------------------------------------------------------ *
@@ -54,7 +54,12 @@ export interface BuybackInput {
   quantity: Numeric;
   /** %ຄຳ in percent units (96 means 96%). ຄຳຕົ້ມ only. */
   goldPercent?: Numeric;
-  /** ຄ່າອ່ອນ / ຄ່າຫັກ deducted per piece before multiplying by quantity. */
+  /**
+   * ຄ່າອ່ອນ per 0.1 g shortfall step (from Module ຄ່າອ່ອນ, e.g. 400,000 LAK).
+   * Applied automatically when `kind === 'HUMP'`.
+   */
+  softGoldFeePerUnit?: Numeric;
+  /** @deprecated Deduction is now auto-computed for HUMP and 0 for GOOD/BAR. */
   deduction?: Numeric;
 }
 
@@ -178,59 +183,91 @@ export function shopBuybackPriceKpv(
 }
 
 /**
- * ລາຄາຊື້ຄືນໜ້າຮ້ານ — ກໍລະນີ 2, ຄຳຮ້ານອື່ນ / ຄຳຕົ້ມ (TOR §5.1).
+ * How many 0.1 g steps a shortfall is billed at for KPV ຄຳຫຍຸບ buyback.
+ * Any non-zero shortfall (even 0.003 g) rounds UP to a 0.1 g step so the shop
+ * never waives real weight loss.
+ */
+export function softGoldStepsBuyback(shortfallG: Numeric): Decimal {
+  const s = dec(shortfallG);
+  if (!s.isFinite() || s.lte(0)) return dec(0);
+  return s.div('0.1').toDecimalPlaces(0, Decimal.ROUND_UP);
+}
+
+/**
+ * Automatic ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ for KPV ຄຳຫຍຸບ:
+ * - Finds the full standard weight at or above `weightG` (display tiers <= 15 g
+ *   or CEILING to 15 g multiples when > 15 g).
+ * - Subtracts the entered weight to get the shortfall.
+ * - Rounds any shortfall UP to 0.1 g steps (0.003 -> 0.1 -> 1 step) and
+ *   multiplies by `softGoldFeePerUnit` (from Module ຄ່າອ່ອນ, e.g. 400,000).
+ */
+export function computeHumpSoftGoldDeduction(
+  weightG: Numeric,
+  softGoldFeePerUnit: Numeric,
+  table: PriceTableEntry[],
+): { fullWeightG: Decimal; shortfallG: Decimal; deduction: Decimal } {
+  const w = dec(weightG);
+  const fee = dec(softGoldFeePerUnit);
+  if (!w.isFinite() || w.lte(0) || !fee.isFinite() || fee.lte(0)) {
+    return { fullWeightG: dec(0), shortfallG: dec(0), deduction: dec(0) };
+  }
+
+  let fullWeightG: Decimal;
+  if (w.gt(GRAMS_PER_BAHT)) {
+    fullWeightG = ceilingTo(w, GRAMS_PER_BAHT);
+  } else {
+    const tier = lookupAtLeast(table, w);
+    if (!tier) return { fullWeightG: dec(0), shortfallG: dec(0), deduction: dec(0) };
+    fullWeightG = tier.weightG;
+  }
+
+  const shortfallG = fullWeightG.minus(w);
+  if (shortfallG.lte(0)) {
+    return { fullWeightG, shortfallG: dec(0), deduction: dec(0) };
+  }
+
+  const deduction = softGoldStepsBuyback(shortfallG).mul(fee);
+  return { fullWeightG, shortfallG, deduction };
+}
+
+/**
+ * ລາຄາຊື້ຄືນໜ້າຮ້ານ — ກໍລະນີ 2, ຄຳຮ້ານອື່ນ / ຄຳຕົ້ມ:
+ * uses ລາຄາຊື້ຄືນ ຮູບປະພັນ-1ບາດ directly for all weights.
  */
 export function shopBuybackPriceBoiled(
   weightG: Numeric,
   source: BuybackPriceSource,
-  table: PriceTableEntry[],
+  _table?: PriceTableEntry[],
 ): { price: Decimal; branch: string } {
   const w = dec(weightG);
   if (!w.isFinite() || w.lte(0)) return { price: dec(0), branch: 'ນ້ຳໜັກເປັນ 0' };
 
   const price1Baht = source.price1BahtFor('BOILED');
-
-  if (w.gt(GRAMS_PER_BAHT)) {
-    // CEILING(ນ້ຳໜັກ/15, 1) * Price1Baht — written literally as in the TOR.
-    return {
-      price: ceilingTo(w.div(GRAMS_PER_BAHT), 1).mul(price1Baht),
-      branch: 'ຄຳຕົ້ມ — CEILING(ນ້ຳໜັກ/15, 1)',
-    };
-  }
-
-  // Same descending match as ຄຳຫຍຸບ: the workbook prices ຄຳຕົ້ມ at the
-  // smallest tier that covers the weight (ຄຳຮ້ານອື່ນ!F10).
-  const tier = lookupAtLeast(table, w);
-  return tier === null
-    ? { price: dec(0), branch: 'ຄຳຕົ້ມ — ບໍ່ພົບໃນ PriceMatch' }
-    : { price: tier.buybackPrice, branch: 'ຄຳຕົ້ມ — PriceMatch (ຂັ້ນທີ່ ≥ ນ້ຳໜັກ)' };
+  return {
+    price: price1Baht,
+    branch: 'ຄຳຕົ້ມ — ນ້ຳໜັກ × %ຄຳ ÷ 15 × ລາຄາ 1 ບາດ',
+  };
 }
 
 /**
- * ລາຄາທີ່ຕ້ອງຈ່າຍ for ຄຳຕົ້ມ (TOR §5.1 ກໍລະນີ 2):
+ * ລາຄາທີ່ຕ້ອງຈ່າຍ for ຄຳຕົ້ມ (ກໍລະນີ 2, ຄຳຮ້ານອື່ນ):
  *
- *   ((ນ້ຳໜັກ × ລາຄາຊື້ຄືນໜ້າຮ້ານ) / CEILING(ນ້ຳໜັກ, 15)) × %ຄຳ
+ *   (ນ້ຳໜັກ(g) × %ຄຳ / 15 × ລາຄາຊື້ຄືນ ຮູບປະພັນ-1ບາດ)
  *     -> ROUNDDOWN(..., -3) -> × ຈຳນວນຊິ້ນ
- *
- * ROUNDDOWN, not ROUND: on gold of unverified purity the shop rounds in its
- * own favour.
  */
 export function payableBoiled(
   weightG: Numeric,
-  shopPrice: Numeric,
+  price1Baht: Numeric,
   goldPercent: Numeric,
   quantity: Numeric,
 ): Decimal {
   const w = dec(weightG);
   if (!w.isFinite() || w.lte(0)) return dec(0);
 
-  const denominator = ceilingTo(w, GRAMS_PER_BAHT);
-  if (denominator.isZero()) return dec(0);
-
   const perPiece = w
-    .mul(dec(shopPrice))
-    .div(denominator)
-    .mul(dec(goldPercent).div(100));
+    .mul(dec(goldPercent).div(100))
+    .div(GRAMS_PER_BAHT)
+    .mul(dec(price1Baht));
 
   return roundDown(perPiece, -3).mul(dec(quantity));
 }
@@ -238,7 +275,10 @@ export function payableBoiled(
 /**
  * The whole §5.1 calculation for one buyback line.
  *
- * ລາຄາທີ່ຕ້ອງຈ່າຍ = (ລາຄາຕາມປະເພດຄຳ − ຄ່າຫັກ/ຄ່າອ່ອນ) × ຈຳນວນ
+ * - BOILED (ຄຳຮ້ານອື່ນ): `ນ້ຳໜັກ × %ຄຳ ÷ 15 × ລາຄາ 1 ບາດ`, rounded down to 1,000 LAK per piece.
+ * - HUMP (ຄຳຫຍຸບ): auto-deducts ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ from `softGoldFeePerUnit`.
+ * - GOOD / BAR (ຄຳດີ / ຄຳແທ່ງ): no deduction (`0`).
+ *
  * A negative result is clamped to zero — the shop never charges a customer
  * to take gold off them.
  */
@@ -248,7 +288,6 @@ export function calculateBuyback(
   table: PriceTableEntry[],
 ): BuybackResult {
   const quantity = dec(input.quantity);
-  const deduction = dec(input.deduction ?? 0);
 
   if (input.kind === 'BOILED') {
     const { price, branch } = shopBuybackPriceBoiled(input.weightG, source, table);
@@ -267,6 +306,10 @@ export function calculateBuyback(
   }
 
   const { price, branch } = shopBuybackPriceKpv(input.kind, input.weightG, source, table);
+  const deduction =
+    input.kind === 'HUMP' && price.gt(0)
+      ? computeHumpSoftGoldDeduction(input.weightG, input.softGoldFeePerUnit ?? 0, table).deduction
+      : dec(0);
   const perPiece = price.minus(deduction);
   const payable = perPiece.isNegative() ? dec(0) : perPiece.mul(quantity);
 

@@ -1,4 +1,4 @@
-import { type Decimal, type Numeric } from './decimal.js';
+import { Decimal, type Numeric } from './decimal.js';
 /** The four ປະເພດຄຳ that can be bought back over the counter. */
 export type BuybackGoldKind = 'GOOD' | 'HUMP' | 'BAR' | 'BOILED';
 /**
@@ -40,7 +40,12 @@ export interface BuybackInput {
     quantity: Numeric;
     /** %ຄຳ in percent units (96 means 96%). ຄຳຕົ້ມ only. */
     goldPercent?: Numeric;
-    /** ຄ່າອ່ອນ / ຄ່າຫັກ deducted per piece before multiplying by quantity. */
+    /**
+     * ຄ່າອ່ອນ per 0.1 g shortfall step (from Module ຄ່າອ່ອນ, e.g. 400,000 LAK).
+     * Applied automatically when `kind === 'HUMP'`.
+     */
+    softGoldFeePerUnit?: Numeric;
+    /** @deprecated Deduction is now auto-computed for HUMP and 0 for GOOD/BAR. */
     deduction?: Numeric;
 }
 export interface BuybackResult {
@@ -84,26 +89,46 @@ export declare function shopBuybackPriceKpv(kind: Exclude<BuybackGoldKind, 'BOIL
     branch: string;
 };
 /**
- * ລາຄາຊື້ຄືນໜ້າຮ້ານ — ກໍລະນີ 2, ຄຳຮ້ານອື່ນ / ຄຳຕົ້ມ (TOR §5.1).
+ * How many 0.1 g steps a shortfall is billed at for KPV ຄຳຫຍຸບ buyback.
+ * Any non-zero shortfall (even 0.003 g) rounds UP to a 0.1 g step so the shop
+ * never waives real weight loss.
  */
-export declare function shopBuybackPriceBoiled(weightG: Numeric, source: BuybackPriceSource, table: PriceTableEntry[]): {
+export declare function softGoldStepsBuyback(shortfallG: Numeric): Decimal;
+/**
+ * Automatic ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ for KPV ຄຳຫຍຸບ:
+ * - Finds the full standard weight at or above `weightG` (display tiers <= 15 g
+ *   or CEILING to 15 g multiples when > 15 g).
+ * - Subtracts the entered weight to get the shortfall.
+ * - Rounds any shortfall UP to 0.1 g steps (0.003 -> 0.1 -> 1 step) and
+ *   multiplies by `softGoldFeePerUnit` (from Module ຄ່າອ່ອນ, e.g. 400,000).
+ */
+export declare function computeHumpSoftGoldDeduction(weightG: Numeric, softGoldFeePerUnit: Numeric, table: PriceTableEntry[]): {
+    fullWeightG: Decimal;
+    shortfallG: Decimal;
+    deduction: Decimal;
+};
+/**
+ * ລາຄາຊື້ຄືນໜ້າຮ້ານ — ກໍລະນີ 2, ຄຳຮ້ານອື່ນ / ຄຳຕົ້ມ:
+ * uses ລາຄາຊື້ຄືນ ຮູບປະພັນ-1ບາດ directly for all weights.
+ */
+export declare function shopBuybackPriceBoiled(weightG: Numeric, source: BuybackPriceSource, _table?: PriceTableEntry[]): {
     price: Decimal;
     branch: string;
 };
 /**
- * ລາຄາທີ່ຕ້ອງຈ່າຍ for ຄຳຕົ້ມ (TOR §5.1 ກໍລະນີ 2):
+ * ລາຄາທີ່ຕ້ອງຈ່າຍ for ຄຳຕົ້ມ (ກໍລະນີ 2, ຄຳຮ້ານອື່ນ):
  *
- *   ((ນ້ຳໜັກ × ລາຄາຊື້ຄືນໜ້າຮ້ານ) / CEILING(ນ້ຳໜັກ, 15)) × %ຄຳ
+ *   (ນ້ຳໜັກ(g) × %ຄຳ / 15 × ລາຄາຊື້ຄືນ ຮູບປະພັນ-1ບາດ)
  *     -> ROUNDDOWN(..., -3) -> × ຈຳນວນຊິ້ນ
- *
- * ROUNDDOWN, not ROUND: on gold of unverified purity the shop rounds in its
- * own favour.
  */
-export declare function payableBoiled(weightG: Numeric, shopPrice: Numeric, goldPercent: Numeric, quantity: Numeric): Decimal;
+export declare function payableBoiled(weightG: Numeric, price1Baht: Numeric, goldPercent: Numeric, quantity: Numeric): Decimal;
 /**
  * The whole §5.1 calculation for one buyback line.
  *
- * ລາຄາທີ່ຕ້ອງຈ່າຍ = (ລາຄາຕາມປະເພດຄຳ − ຄ່າຫັກ/ຄ່າອ່ອນ) × ຈຳນວນ
+ * - BOILED (ຄຳຮ້ານອື່ນ): `ນ້ຳໜັກ × %ຄຳ ÷ 15 × ລາຄາ 1 ບາດ`, rounded down to 1,000 LAK per piece.
+ * - HUMP (ຄຳຫຍຸບ): auto-deducts ຫັກຄ່າຄຳອ່ອນ/ຊິ້ນ from `softGoldFeePerUnit`.
+ * - GOOD / BAR (ຄຳດີ / ຄຳແທ່ງ): no deduction (`0`).
+ *
  * A negative result is clamped to zero — the shop never charges a customer
  * to take gold off them.
  */

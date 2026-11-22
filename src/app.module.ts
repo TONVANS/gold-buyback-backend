@@ -28,6 +28,7 @@ import { StockModule } from './modules/stock/stock.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { SystemModule } from './modules/system/system.module';
 import { FinanceModule } from './modules/finance/finance.module';
+import { ApprovalsModule } from './modules/approvals/approvals.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { FinanceModule } from './modules/finance/finance.module';
     AdminModule,
     SystemModule,
     FinanceModule,
+    ApprovalsModule,
   ],
   providers: [
     // Order matters: authenticate, then check the role, then check the shift.

@@ -86,7 +86,7 @@ export class CreditController {
   }
 
   /** ຮັບຄ່າງວດ — draws down the outstanding AR (Cash). */
-  @Roles('PAYMENT', 'ADMIN', 'MANAGER')
+  @Roles('PAYMENT', 'FINANCIAL_CONTROLLER', 'ADMIN', 'MANAGER')
   @RequiresOpenShift()
   @Post(':id/receipts')
   addReceipt(
