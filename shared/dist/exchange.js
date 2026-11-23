@@ -306,13 +306,24 @@ export function calculateExchange(input) {
 export function validateExchangeBalance(totals) {
     const accountedFor = totals.totalNewWeightG.plus(totals.totalRemainingWeightG);
     const difference = totals.standardOldWeightG.minus(accountedFor);
+    const newExceedsActualOld = totals.totalNewWeightG.gt(totals.actualOldWeightG);
+    if (newExceedsActualOld) {
+        const newG = trimTrailingZeros(totals.totalNewWeightG.toDecimalPlaces(4).toFixed());
+        const actualOldG = trimTrailingZeros(totals.actualOldWeightG.toDecimalPlaces(4).toFixed());
+        return {
+            isBalanced: false,
+            difference,
+            newExceedsActualOld: true,
+            messageLo: `ນ້ຳໜັກລວມຄຳໃໝ່ (${newG} g) ເກີນນ້ຳໜັກລວມຄຳເກົ່າ (${actualOldG} g) — ນ້ຳໜັກຄຳໃໝ່ຕ້ອງບໍ່ເກີນຄຳເກົ່າ`,
+        };
+    }
     if (difference.isZero()) {
-        return { isBalanced: true, difference, messageLo: null };
+        return { isBalanced: true, difference, newExceedsActualOld: false, messageLo: null };
     }
     const amount = trimTrailingZeros(difference.abs().toDecimalPlaces(4).toFixed());
     const messageLo = difference.isPositive()
         ? `ນ້ຳໜັກຍັງບໍ່ຄົບ ${amount} g — ລວມນ້ຳໜັກຄຳໃໝ່ + ຄຳເກົ່າຄົງເຫຼືອ ຕ້ອງເທົ່າກັບເກນນ້ຳໜັກຄຳເກົ່າ`
         : `ນ້ຳໜັກເກີນ ${amount} g — ລວມນ້ຳໜັກຄຳໃໝ່ + ຄຳເກົ່າຄົງເຫຼືອ ຫຼາຍກວ່າເກນນ້ຳໜັກຄຳເກົ່າ`;
-    return { isBalanced: false, difference, messageLo };
+    return { isBalanced: false, difference, newExceedsActualOld: false, messageLo };
 }
 //# sourceMappingURL=exchange.js.map

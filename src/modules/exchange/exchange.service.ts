@@ -311,6 +311,7 @@ export class ExchangeService {
       shopBuybackPrice: totals.shopBuybackPrice.toFixed(),
       totalPayable: totals.totalPayable.toFixed(),
       isBalanced: validation.isBalanced,
+      newExceedsActualOld: validation.newExceedsActualOld,
       difference: validation.difference.toFixed(),
       messageLo: validation.messageLo,
       newLines: input.newLines.map((l) => ({

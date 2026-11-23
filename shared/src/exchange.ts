@@ -80,13 +80,15 @@ export interface ExchangeTotals {
 }
 
 export interface ExchangeValidation {
-  /** True only when the balance is exactly zero — the gate on saving. */
+  /** True only when the balance is zero AND totalNewWeightG <= actualOldWeightG. */
   isBalanced: boolean;
   /**
    * (ເກນນ້ຳໜັກຄຳເກົ່າ standard) − (ລວມນ້ຳໜັກຄຳໃໝ່ + ລວມນ້ຳໜັກເກົ່າຄົງເຫຼືອ)
    * Positive: gold unaccounted for. Negative: more taken than brought in.
    */
   difference: Decimal;
+  /** True when totalNewWeightG exceeds actualOldWeightG. */
+  newExceedsActualOld: boolean;
   /** Lao message to show beside the Save button; null when balanced. */
   messageLo: string | null;
 }
@@ -457,9 +459,21 @@ export function calculateExchange(input: ExchangeInput): ExchangeTotals {
 export function validateExchangeBalance(totals: ExchangeTotals): ExchangeValidation {
   const accountedFor = totals.totalNewWeightG.plus(totals.totalRemainingWeightG);
   const difference = totals.standardOldWeightG.minus(accountedFor);
+  const newExceedsActualOld = totals.totalNewWeightG.gt(totals.actualOldWeightG);
+
+  if (newExceedsActualOld) {
+    const newG = trimTrailingZeros(totals.totalNewWeightG.toDecimalPlaces(4).toFixed());
+    const actualOldG = trimTrailingZeros(totals.actualOldWeightG.toDecimalPlaces(4).toFixed());
+    return {
+      isBalanced: false,
+      difference,
+      newExceedsActualOld: true,
+      messageLo: `ນ້ຳໜັກລວມຄຳໃໝ່ (${newG} g) ເກີນນ້ຳໜັກລວມຄຳເກົ່າ (${actualOldG} g) — ນ້ຳໜັກຄຳໃໝ່ຕ້ອງບໍ່ເກີນຄຳເກົ່າ`,
+    };
+  }
 
   if (difference.isZero()) {
-    return { isBalanced: true, difference, messageLo: null };
+    return { isBalanced: true, difference, newExceedsActualOld: false, messageLo: null };
   }
 
   const amount = trimTrailingZeros(difference.abs().toDecimalPlaces(4).toFixed());
@@ -467,5 +481,5 @@ export function validateExchangeBalance(totals: ExchangeTotals): ExchangeValidat
     ? `ນ້ຳໜັກຍັງບໍ່ຄົບ ${amount} g — ລວມນ້ຳໜັກຄຳໃໝ່ + ຄຳເກົ່າຄົງເຫຼືອ ຕ້ອງເທົ່າກັບເກນນ້ຳໜັກຄຳເກົ່າ`
     : `ນ້ຳໜັກເກີນ ${amount} g — ລວມນ້ຳໜັກຄຳໃໝ່ + ຄຳເກົ່າຄົງເຫຼືອ ຫຼາຍກວ່າເກນນ້ຳໜັກຄຳເກົ່າ`;
 
-  return { isBalanced: false, difference, messageLo };
+  return { isBalanced: false, difference, newExceedsActualOld: false, messageLo };
 }

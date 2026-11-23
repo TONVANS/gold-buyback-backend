@@ -826,6 +826,66 @@ let StockService = class StockService {
         return rawPaid.gt(0) ? rawPaid : (0, domain_1.dec)(0);
     }
     /**
+     * ດຶງລາຄາຊື້ຄືນ 1 ບາດ ຈາກ /admin/products (PriceSnapshot ລ່າສຸດ) ແລະ ຄຳນວນຕົ້ນທຶນ:
+     *   ຕົ້ນທຶນ = (ນ້ຳໜັກ ÷ 15) × ລາຄາຊື້ຄືນ 1 ບາດ
+     * ຄືນ 0 ຖ້າຍັງບໍ່ໄດ້ຕັ້ງລາຄາ ເພື່ອບໍ່ໃຫ້ໜ້າສະຫຼຸບ crash ເທິງຖານຂໍ້ມູນໃໝ່.
+     */
+    async loadProductBuybackRates() {
+        const snapshot = await this.prisma.priceSnapshot.findFirst({
+            orderBy: { effectiveAt: 'desc' },
+            include: { lines: true },
+        });
+        const jewelryLine = snapshot?.lines.find((l) => l.tierCode === domain_1.TierCode.JW_BAHT_1);
+        const barLine = snapshot?.lines.find((l) => l.tierCode === domain_1.TierCode.BAR_BAHT_1);
+        const jewelry1Baht = jewelryLine ? toDec(jewelryLine.buybackPrice) : (0, domain_1.dec)(0);
+        const bar1Baht = barLine ? toDec(barLine.buybackPrice) : jewelry1Baht;
+        const jewelryPerG = jewelry1Baht.div(domain_1.GRAMS_PER_BAHT);
+        const barPerG = bar1Baht.div(domain_1.GRAMS_PER_BAHT);
+        const buyback1BahtForGoldType = (goldTypeCode) => goldTypeCode === 'BAR' ? bar1Baht : jewelry1Baht;
+        return {
+            jewelry1Baht,
+            bar1Baht,
+            jewelryPerG,
+            barPerG,
+            buyback1BahtForGoldType,
+            perGramForGoldType: (goldTypeCode) => goldTypeCode === 'BAR' ? barPerG : jewelryPerG,
+            perGramForSkuItem: (goldItemCode) => goldItemCode === 'GOLD_BAR' ? barPerG : jewelryPerG,
+            costByBahtPrice: (weightG, goldTypeCode) => weightG.div(domain_1.GRAMS_PER_BAHT).mul(buyback1BahtForGoldType(goldTypeCode)),
+        };
+    }
+    /**
+     * ແຍກສ່ວນນ້ຳໜັກ ແລະ ຕົ້ນທຶນຂອງປະເພດຄຳທີ່ຕ້ອງການ (ເຊັ່ນ ຄຳຕົ້ມ) ອອກຈາກບິນ Buyback
+     * ທີ່ອາດມີຫຼາຍປະເພດຄຳໃນບິນດຽວ — ກົງກັບ loadTodayReceivedByType.
+     */
+    boiledShareOfBuyback(buyback, targetGoldTypeId, boiledTypeIds) {
+        const actualPaid = this.actualBuybackPaid(buyback);
+        if (buyback.lines.length === 0) {
+            return {
+                weightG: toDec(buyback.weightG),
+                quantity: buyback.quantity,
+                goldPercent: buyback.goldPercent,
+                payableAmount: actualPaid,
+            };
+        }
+        const totalPayable = buyback.lines.reduce((sum, l) => sum.plus(toDec(l.payableAmount)), (0, domain_1.dec)(0));
+        const totalWeight = buyback.lines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
+        const matchingLines = buyback.lines.filter((l) => targetGoldTypeId
+            ? l.goldTypeId === targetGoldTypeId
+            : boiledTypeIds
+                ? boiledTypeIds.has(l.goldTypeId)
+                : true);
+        const weightG = matchingLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
+        const quantity = matchingLines.reduce((sum, l) => sum + l.quantity, 0);
+        const matchingPayable = matchingLines.reduce((sum, l) => sum.plus(toDec(l.payableAmount)), (0, domain_1.dec)(0));
+        const payableAmount = totalPayable.gt(0)
+            ? actualPaid.mul(matchingPayable).div(totalPayable)
+            : totalWeight.gt(0)
+                ? actualPaid.mul(weightG).div(totalWeight)
+                : (0, domain_1.dec)(0);
+        const goldPercent = matchingLines.find((l) => l.goldPercent !== null)?.goldPercent ?? buyback.goldPercent;
+        return { weightG, quantity, goldPercent, payableAmount };
+    }
+    /**
      * ກວດ ແລະ ກຽມລາຍການ Buyback ຄຳຕົ້ມ ສຳລັບການສ້າງ ຫຼື ແກ້ໄຂໃບມອບຄຳ.
      */
     async buildBoiledHandoverItems(client, goldTypeId, rawIds, currentHandoverId) {
@@ -847,24 +907,37 @@ let StockService = class StockService {
             },
             select: {
                 id: true,
+                goldTypeId: true,
                 weightG: true,
                 quantity: true,
                 goldPercent: true,
                 paidAmount: true,
                 payments: { select: { amountLak: true, changeLak: true } },
+                lines: {
+                    select: {
+                        goldTypeId: true,
+                        weightG: true,
+                        quantity: true,
+                        goldPercent: true,
+                        payableAmount: true,
+                    },
+                },
             },
         });
         if (rows.length !== ids.length) {
             throw new common_1.BadRequestException('ມີລາຍການທີ່ມອບແລ້ວ ຫຼື ບໍ່ຢູ່ໃນເງື່ອນໄຂ — ກະລຸນາໂຫຼດລາຍການຄືນ');
         }
-        const items = rows.map((r) => ({
-            buybackId: r.id,
-            weightG: r.weightG,
-            quantity: r.quantity,
-            goldPercent: r.goldPercent,
-            payableAmount: D(this.actualBuybackPaid(r)),
-        }));
-        const weightG = rows.reduce((sum, r) => sum.plus(toDec(r.weightG)), (0, domain_1.dec)(0));
+        const items = rows.map((r) => {
+            const share = this.boiledShareOfBuyback(r, goldTypeId);
+            return {
+                buybackId: r.id,
+                weightG: D(share.weightG),
+                quantity: share.quantity,
+                goldPercent: share.goldPercent,
+                payableAmount: D(share.payableAmount),
+            };
+        });
+        const weightG = items.reduce((sum, i) => sum.plus(toDec(i.weightG)), (0, domain_1.dec)(0));
         const warehouseCost = items.reduce((sum, i) => sum.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0));
         return { items, weightG, warehouseCost };
     }
@@ -886,7 +959,7 @@ let StockService = class StockService {
                 pure: null,
                 glass: null,
                 shortfall: null,
-                cost: costFor(goldType.id, out),
+                cost: costFor(goldType, out),
             };
         }
         if (input.pureWeightG === undefined || input.glassWeightG === undefined) {
@@ -906,20 +979,20 @@ let StockService = class StockService {
             pure,
             glass,
             shortfall: out.minus(pure).minus(glass),
-            cost: costFor(goldType.id, out),
+            cost: costFor(goldType, out),
         };
     }
     /**
-     * ຍອດຄຳເກົ່າ ແລະ ເງິນທີ່ຈ່າຍຈິງໃຫ້ລູກຄ້າໃນມື້ການຄ້ານີ້ ແຍກຕາມປະເພດຄຳ.
-     *
-     * ອ່ານຈາກ Buyback (ທີ່ COMPLETED ຕາມ `confirmedAt`) ແລະ GoldExchange (ທີ່ APPROVED/COMPLETED
-     * ຕາມ `approvedAt`) ບ່ອນດຽວ ສຳລັບທັງຕາຕະລາງສະຫຼຸບ ແລະ ການຄິດຕົ້ນທຶນມອບເຂົ້າສາງ.
+     * ຍອດຄຳເກົ່າ ແລະ ຕົ້ນທຶນທີ່ຮັບເຂົ້າໃນມື້ການຄ້ານີ້ ແຍກຕາມປະເພດຄຳ:
+     * - ນ້ຳໜັກ Buyback + ນ້ຳໜັກຄຳເກົ່າເຕັມຈຳນວນຈາກການປ່ຽນ (`oldLines`, ຕາມ Excel Dashboard).
+     * - ຕົ້ນທຶນ Buyback = ເງິນທີ່ຈ່າຍຈິງ; ຕົ້ນທຶນ Exchange = ເງິນທີ່ຈ່າຍຈິງ + ມູນຄ່າຄຳໃໝ່ທີ່ແລກອອກ
+     *   (ຄິດຈາກລາຄາຊື້ຄືນ 1 ບາດ ÷ 15 ໃນ /admin/products).
      */
     async loadTodayReceivedByType() {
         const businessDate = business_day_service_1.BusinessDayService.localMidnight();
         const tomorrow = new Date(businessDate);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        const [buybacks, exchanges] = await Promise.all([
+        const [buybacks, exchanges, productRates] = await Promise.all([
             this.prisma.buyback.findMany({
                 where: {
                     deletedAt: null,
@@ -956,10 +1029,17 @@ let StockService = class StockService {
                     oldLines: {
                         select: { goldTypeId: true, weightG: true, quantity: true },
                     },
-                    newLines: { select: { weightG: true, quantity: true } },
+                    newLines: {
+                        select: {
+                            weightG: true,
+                            quantity: true,
+                            goldSku: { select: { goldItem: { select: { code: true } } } },
+                        },
+                    },
                     payments: { select: { amountLak: true, changeLak: true } },
                 },
             }),
+            this.loadProductBuybackRates(),
         ]);
         const byType = new Map();
         const ensure = (goldTypeId) => {
@@ -1006,9 +1086,7 @@ let StockService = class StockService {
             if (oldTotal.lte(0))
                 continue;
             const newTotal = exchange.newLines.reduce((sum, l) => sum.plus(toDec(l.weightG).mul(l.quantity)), (0, domain_1.dec)(0));
-            // ນ້ຳໜັກຄຳເກົ່າສຸດທິຈາກການປ່ຽນ = ຄຳເກົ່າ − ຄຳໃໝ່ທີ່ລູກຄ້ານຳໄປ (ບໍ່ຕິດລົບ).
-            const netExchangeWeight = oldTotal.gt(newTotal) ? oldTotal.minus(newTotal) : (0, domain_1.dec)(0);
-            // ຖ້າ totalPayable <= 0 ແປວ່າລູກຄ້າຈ່າຍຄ່າທຳນຽມໃຫ້ຮ້ານ (ຮ້ານບໍ່ໄດ້ຈ່າຍເງິນໃຫ້ລູກຄ້າ = 0).
+            // ຖ້າ totalPayable <= 0 ແປວ່າລູກຄ້າຈ່າຍຄ່າທຳນຽມ/ສ່ວນຕ່າງໃຫ້ຮ້ານ (ຮ້ານບໍ່ໄດ້ຈ່າຍເງິນສົດ = 0).
             let actualPaid = (0, domain_1.dec)(0);
             if (toDec(exchange.totalPayable).gt(0)) {
                 const netPayments = exchange.payments.reduce((sum, p) => sum.plus(toDec(p.amountLak).minus(toDec(p.changeLak))), (0, domain_1.dec)(0));
@@ -1016,25 +1094,45 @@ let StockService = class StockService {
                 if (rawPaid.gt(0))
                     actualPaid = rawPaid;
             }
+            // ມູນຄ່າຄຳໃໝ່ທີ່ແລກອອກ ຄິດຈາກລາຄາຊື້ຄືນ 1 ບາດ ÷ 15 ໃນ /admin/products;
+            // ຖ້າຄຳໃໝ່ຫຼາຍກວ່າຄຳເກົ່າ ສ່ວນເກີນແມ່ນລູກຄ້າຊື້ເພີ່ມດ້ວຍເງິນສົດ ຈຶ່ງຄິດສັດສ່ວນແລກເທົ່າຄຳເກົ່າ.
+            const rawNewGoldValue = exchange.newLines.reduce((sum, l) => {
+                const w = toDec(l.weightG).mul(l.quantity);
+                const ratePerG = productRates.perGramForSkuItem(l.goldSku?.goldItem?.code);
+                return sum.plus(w.mul(ratePerG));
+            }, (0, domain_1.dec)(0));
+            const swappedNewGoldValue = newTotal.gt(oldTotal)
+                ? rawNewGoldValue.mul(oldTotal).div(newTotal)
+                : rawNewGoldValue;
+            const totalExchangeCost = actualPaid.plus(swappedNewGoldValue);
             for (const line of exchange.oldLines) {
                 const w = toDec(line.weightG).mul(line.quantity);
                 const ratio = w.div(oldTotal);
                 const entry = ensure(line.goldTypeId);
-                entry.receivedG = entry.receivedG.plus(ratio.mul(netExchangeWeight));
-                if (netExchangeWeight.gt(0))
-                    entry.quantity += line.quantity;
+                entry.receivedG = entry.receivedG.plus(w);
+                entry.quantity += line.quantity;
                 entry.newWeightG = entry.newWeightG.plus(ratio.mul(newTotal));
-                entry.receivedPaid = entry.receivedPaid.plus(ratio.mul(actualPaid));
+                entry.receivedPaid = entry.receivedPaid.plus(ratio.mul(totalExchangeCost));
             }
         }
         return byType;
     }
     /**
-     * ຄຳນວນຕົ້ນທຶນເຂົ້າສາງ ຈາກຍອດຄົງເຫຼືອຫຼັງມອບໃນມື້ (ຕົ້ນທຶນຄົງເຫຼືອ ÷ ນ້ຳໜັກຄົງເຫຼືອ)
-     * ເພື່ອໃຫ້ເມື່ອມອບຄົບຍອດຄົງເຫຼືອ ຕົ້ນທຶນຄົງເຫຼືອຈະເປັນ 0 ພໍດີ (ບໍ່ເຄື່ອນຈາກການປັດເສດ
-     * ຫຼື ບິນໃໝ່ທີ່ເພີ່ມເຂົ້າລະຫວ່າງມື້).
+     * ຄຳນວນຕົ້ນທຶນເຂົ້າສາງ ຂອງໃບມອບຄຳແບບຮອບ (ຄຳດີ / ຄຳຫຍຸບ / ແທ່ງ) ດ້ວຍສູດ:
+     *   ຕົ້ນທຶນ = (ນ້ຳໜັກ ÷ 15) × ລາຄາຊື້ຄືນ/1ບາດ (ຈາກ /admin/products)
+     * ຫາກຍັງບໍ່ໄດ້ຕັ້ງລາຄາ ຈຶ່ງໃຊ້ຕົ້ນທຶນສະເລ່ຍຂອງຍອດທີ່ຮັບມື້ນີ້ເປັນສຳຮອງ.
      */
     async buildRoundCostResolver(excludeHandoverId) {
+        const productRates = await this.loadProductBuybackRates();
+        if (productRates.jewelry1Baht.gt(0) || productRates.bar1Baht.gt(0)) {
+            return (goldType, outWeightG) => {
+                const bahtPrice = productRates.buyback1BahtForGoldType(goldType.code);
+                if (bahtPrice.gt(0)) {
+                    return productRates.costByBahtPrice(outWeightG, goldType.code);
+                }
+                return null;
+            };
+        }
         const businessDate = business_day_service_1.BusinessDayService.localMidnight();
         const tomorrow = new Date(businessDate);
         tomorrow.setDate(tomorrow.getDate() + 1);
@@ -1066,19 +1164,21 @@ let StockService = class StockService {
                 cost: prev.cost.plus(hCost),
             });
         }
-        return (goldTypeId, outWeightG) => {
-            const entry = receivedByType.get(goldTypeId);
+        return (goldType, outWeightG) => {
+            const entry = receivedByType.get(goldType.id);
             if (!entry)
                 return null;
-            const handed = handedByType.get(goldTypeId);
+            const handed = handedByType.get(goldType.id);
             const remainingG = entry.receivedG.minus(handed?.weightG ?? (0, domain_1.dec)(0));
             const remainingPaid = entry.receivedPaid.minus(handed?.cost ?? (0, domain_1.dec)(0));
             const safeRemainingPaid = remainingPaid.gt(0) ? remainingPaid : (0, domain_1.dec)(0);
             if (remainingG.gt(0)) {
-                // ມອບເທົ່າກັບຍອດຄົງເຫຼືອທັງໝົດ => ໃຊ້ຕົ້ນທຶນຄົງເຫຼືອໂດຍຕົງ ເພື່ອບໍ່ໃຫ້ເຫຼືອເສດ.
                 if (outWeightG.eq(remainingG))
                     return safeRemainingPaid;
-                return outWeightG.mul(safeRemainingPaid.div(remainingG));
+                if (outWeightG.lt(remainingG)) {
+                    return outWeightG.mul(safeRemainingPaid.div(remainingG));
+                }
+                return safeRemainingPaid;
             }
             if (entry.receivedG.gt(0)) {
                 return outWeightG.mul(entry.receivedPaid.div(entry.receivedG));
@@ -1566,7 +1666,7 @@ let StockService = class StockService {
         const businessDate = business_day_service_1.BusinessDayService.localMidnight();
         const tomorrow = new Date(businessDate);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        const [goldTypes, receivedByType, handovers] = await Promise.all([
+        const [goldTypes, receivedByType, handovers, productRates] = await Promise.all([
             this.prisma.goldType.findMany({
                 where: { isStockType: true, deletedAt: null },
                 orderBy: { sortOrder: 'asc' },
@@ -1587,20 +1687,28 @@ let StockService = class StockService {
                     items: { select: { payableAmount: true } },
                 },
             }),
+            this.loadProductBuybackRates(),
         ]);
         return goldTypes.map((goldType) => {
             const entry = receivedByType.get(goldType.id);
             const receivedG = entry?.receivedG ?? (0, domain_1.dec)(0);
             const quantity = entry?.quantity ?? 0;
-            const receivedPaid = entry?.receivedPaid ?? (0, domain_1.dec)(0);
             const newWeightG = entry?.newWeightG ?? (0, domain_1.dec)(0);
+            const bahtPrice = productRates.buyback1BahtForGoldType(goldType.code);
+            // ຄຳດີ / ຄຳຫຍຸບ / ຄຳແທ່ງ: ຕົ້ນທຶນ = (ນ້ຳໜັກ ÷ 15) × ລາຄາຊື້ຄືນ/1ບາດ ຈາກ /admin/products.
+            // ຄຳຕົ້ມ: ໃຊ້ຍອດທີ່ຈ່າຍຈິງຕາມ %ຄຳ ຂອງແຕ່ລະລາຍການ.
+            const receivedPaid = goldType.code !== 'BOILED' && bahtPrice.gt(0)
+                ? productRates.costByBahtPrice(receivedG, goldType.code)
+                : (entry?.receivedPaid ?? (0, domain_1.dec)(0));
             // ມອບແລ້ວ ຂອງປະເພດຄຳນີ້ — ແລະ ສຳລັບ ຄຳຕົ້ມ ຍັງຮູ້ວ່າເງິນເທົ່າໃດອອກໄປ
             // ພ້ອມກັບລາຍການນັ້ນ, ເພາະມອບເປັນລາຍການ ບໍ່ແມ່ນເປັນນ້ຳໜັກກ້ອນ.
             const mine = handovers.filter((h) => h.goldTypeId === goldType.id);
             const handedG = mine.reduce((sum, h) => sum.plus(toDec(h.weightG)), (0, domain_1.dec)(0));
             const handedPaid = mine.reduce((sum, h) => sum.plus(h.warehouseCost !== null
                 ? toDec(h.warehouseCost)
-                : h.items.reduce((s, i) => s.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0))), (0, domain_1.dec)(0));
+                : goldType.code !== 'BOILED' && bahtPrice.gt(0)
+                    ? productRates.costByBahtPrice(toDec(h.weightG), goldType.code)
+                    : h.items.reduce((s, i) => s.plus(toDec(i.payableAmount)), (0, domain_1.dec)(0))), (0, domain_1.dec)(0));
             /*
              * ຄົງເຫຼືອ = ຮັບຈາກຜູ້ປະເມີນ − ມອບເຂົ້າສາງ (TOR §4.2).
              *
@@ -1611,12 +1719,11 @@ let StockService = class StockService {
             const remainingG = receivedG.minus(handedG);
             const shownRemainingG = remainingG.isNegative() ? (0, domain_1.dec)(0) : remainingG;
             /*
-             * ຕົ້ນທຶນຄົງເຫຼືອ = ຕົ້ນທຶນທີ່ຈ່າຍຈິງໃຫ້ລູກຄ້າ − ຕົ້ນທຶນເຂົ້າສາງ.
+             * ຕົ້ນທຶນຄົງເຫຼືອ = ຕົ້ນທຶນ (①) − ຕົ້ນທຶນເຂົ້າສາງ.
              * ບໍ່ປ່ອຍໃຫ້ຕິດລົບເມື່ອມອບຄຳຕົກຄ້າງຈາກມື້ກ່ອນ.
              */
             const remainingPaid = receivedPaid.minus(handedPaid);
             const shownRemainingPaid = remainingPaid.isNegative() ? (0, domain_1.dec)(0) : remainingPaid;
-            // receivedG ຫັກນ້ຳໜັກຄຳໃໝ່ຈາກການປ່ຽນອອກແລ້ວ — ຈຶ່ງຫານດ້ວຍ receivedG ກົງໆ.
             const receivedAverage = (0, domain_1.goldTypeAverage)(receivedPaid, receivedG, (0, domain_1.dec)(0), true);
             const average = (0, domain_1.goldTypeAverage)(shownRemainingPaid, shownRemainingG, (0, domain_1.dec)(0), true);
             return {
@@ -1642,6 +1749,10 @@ let StockService = class StockService {
                 quantity,
                 /** ນ້ຳໜັກຄຳໃໝ່ທີ່ຈ່າຍອອກໃນການປ່ຽນ — ໄວ້ໃຫ້ລາຍງານອື່ນໃຊ້. */
                 newWeightG: newWeightG.toFixed(),
+                /** ລາຄາຊື້ຄືນ 1 ບາດ ຈາກ /admin/products. */
+                productBuyback1Baht: bahtPrice.toFixed(),
+                /** ລາຄາຊື້ຄືນ/g ຈາກ /admin/products (ລາຄາຊື້ຄືນ 1 ບາດ ÷ 15). */
+                productBuybackPerGram: productRates.perGramForGoldType(goldType.code).toFixed(),
             };
         });
     }
@@ -1693,6 +1804,12 @@ let StockService = class StockService {
      * ລາຍການຈະຫຼຸດອອກຈາກລາຍການເລືອກທັນທີທີ່ມອບ ແລະ ບໍ່ມີທາງມອບສອງຄັ້ງ.
      */
     async pendingOldGoldItems(goldTypeId) {
+        const boiledTypeIds = goldTypeId
+            ? undefined
+            : new Set((await this.prisma.goldType.findMany({
+                where: { code: 'BOILED', deletedAt: null },
+                select: { id: true },
+            })).map((t) => t.id));
         const rows = await this.prisma.buyback.findMany({
             where: {
                 deletedAt: null,
@@ -1701,37 +1818,54 @@ let StockService = class StockService {
                 // ບິນທີ່ "ມີແຖວ" ເປັນຄຳຕົ້ມ — ບໍ່ແມ່ນອີງແຕ່ປະເພດຂອງຫົວບິນ,
                 // ເພາະບິນດຽວປະສົມຫຼາຍປະເພດໄດ້ແລ້ວ.
                 ...(goldTypeId
-                    ? { lines: { some: { goldTypeId } } }
-                    : { lines: { some: { goldType: { code: 'BOILED' } } } }),
+                    ? { OR: [{ goldTypeId }, { lines: { some: { goldTypeId } } }] }
+                    : {
+                        OR: [
+                            { goldType: { code: 'BOILED' } },
+                            { lines: { some: { goldType: { code: 'BOILED' } } } },
+                        ],
+                    }),
             },
             select: {
-                id: true, code: true, weightG: true, quantity: true,
+                id: true, code: true, goldTypeId: true, weightG: true, quantity: true,
                 goldPercent: true, payableAmount: true, paidAmount: true, createdAt: true,
                 goldItem: { select: { nameLo: true } },
                 goldType: { select: { nameLo: true } },
                 customer: { select: { phone: true } },
                 payments: { select: { amountLak: true, changeLak: true } },
+                lines: {
+                    select: {
+                        goldTypeId: true,
+                        weightG: true,
+                        quantity: true,
+                        goldPercent: true,
+                        payableAmount: true,
+                    },
+                },
             },
             orderBy: { createdAt: 'asc' },
             take: 500,
         });
-        return rows.map((r) => {
-            const actualPaid = this.actualBuybackPaid(r);
-            return {
-                id: r.id,
-                code: r.code,
-                weightG: r.weightG.toFixed(),
-                quantity: r.quantity,
-                goldPercent: r.goldPercent ? r.goldPercent.toFixed() : null,
-                payableAmount: actualPaid.toFixed(),
-                paidAmount: actualPaid.toFixed(),
-                totalWeightG: toDec(r.weightG).toFixed(),
-                createdAt: r.createdAt,
-                goldItem: r.goldItem,
-                goldType: r.goldType,
-                customer: r.customer,
-            };
-        });
+        return rows
+            .map((r) => {
+            const share = this.boiledShareOfBuyback(r, goldTypeId, boiledTypeIds);
+            return { r, share };
+        })
+            .filter(({ share }) => share.weightG.gt(0))
+            .map(({ r, share }) => ({
+            id: r.id,
+            code: r.code,
+            weightG: share.weightG.toFixed(),
+            quantity: share.quantity,
+            goldPercent: share.goldPercent ? share.goldPercent.toFixed() : null,
+            payableAmount: share.payableAmount.toFixed(),
+            paidAmount: share.payableAmount.toFixed(),
+            totalWeightG: share.weightG.toFixed(),
+            createdAt: r.createdAt,
+            goldItem: r.goldItem,
+            goldType: r.goldType,
+            customer: r.customer,
+        }));
     }
     /** ລາຍລະອຽດໃບມອບຄຳໜຶ່ງລາຍການ ພ້ອມລາຍການຄຳຕົ້ມ ແລະ ປະຫວັດ Audit. */
     async getHandover(id) {

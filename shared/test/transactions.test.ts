@@ -310,19 +310,45 @@ describe('TOR §5.2 — the CRITICAL zero-balance rule', () => {
     expect(check.messageLo).toContain('ເກີນ');
   });
 
-  it('balances against STANDARD weight, not the worn actual weight', () => {
+  it('balances against STANDARD weight for remaining gold, but blocks new gold exceeding actual old weight', () => {
     // Customer brings back a 15 g piece that now weighs 14.5 g.
-    const totals = calculateExchange({
+    // Taking 15 g of new gold exceeds actual 14.5 g -> blocked.
+    const exceeds = calculateExchange({
       ...base,
       oldLines: [{ weightG: '14.5', quantity: 1, standardWeightG: 15 }],
       newLines: [{ weightG: 15, quantity: 1 }],
       remainingLines: [],
     });
-    expect(totals.actualOldWeightG.toNumber()).toBe(14.5);
-    expect(totals.standardOldWeightG.toNumber()).toBe(15);
-    expect(validateExchangeBalance(totals).isBalanced).toBe(true);
-    // ...and the 0.5 g shortfall is billed as ຄ່າອ່ອນ instead: 5 steps of 0.1 g.
-    expect(totals.softGoldFee.toNumber()).toBe(2_000_000);
+    expect(exceeds.actualOldWeightG.toNumber()).toBe(14.5);
+    expect(exceeds.standardOldWeightG.toNumber()).toBe(15);
+    const exceedsCheck = validateExchangeBalance(exceeds);
+    expect(exceedsCheck.isBalanced).toBe(false);
+    expect(exceedsCheck.newExceedsActualOld).toBe(true);
+    expect(exceedsCheck.messageLo).toContain('14.5');
+
+    // Also blocked on FREE_EXCHANGE.
+    const freeExceeds = calculateExchange({
+      ...base,
+      txnType: 'FREE_EXCHANGE',
+      oldLines: [{ weightG: '14.5', quantity: 1, standardWeightG: 15 }],
+      newLines: [{ weightG: 15, quantity: 1 }],
+      remainingLines: [],
+    });
+    expect(validateExchangeBalance(freeExceeds).isBalanced).toBe(false);
+    expect(validateExchangeBalance(freeExceeds).newExceedsActualOld).toBe(true);
+
+    // Taking 7.5 g new (<= 14.5 g actual) + 7.5 g remaining (= 15 g standard) -> balanced,
+    // and the 0.5 g shortfall is still billed as ຄ່າອ່ອນ: 5 steps of 0.1 g.
+    const valid = calculateExchange({
+      ...base,
+      oldLines: [{ weightG: '14.5', quantity: 1, standardWeightG: 15 }],
+      newLines: [{ weightG: '7.5', quantity: 1 }],
+      remainingLines: [{ weightG: '7.5', quantity: 1 }],
+    });
+    const validCheck = validateExchangeBalance(valid);
+    expect(validCheck.isBalanced).toBe(true);
+    expect(validCheck.newExceedsActualOld).toBe(false);
+    expect(valid.softGoldFee.toNumber()).toBe(2_000_000);
   });
 });
 

@@ -66,13 +66,15 @@ export interface ExchangeTotals {
     totalPayable: Decimal;
 }
 export interface ExchangeValidation {
-    /** True only when the balance is exactly zero — the gate on saving. */
+    /** True only when the balance is zero AND totalNewWeightG <= actualOldWeightG. */
     isBalanced: boolean;
     /**
      * (ເກນນ້ຳໜັກຄຳເກົ່າ standard) − (ລວມນ້ຳໜັກຄຳໃໝ່ + ລວມນ້ຳໜັກເກົ່າຄົງເຫຼືອ)
      * Positive: gold unaccounted for. Negative: more taken than brought in.
      */
     difference: Decimal;
+    /** True when totalNewWeightG exceeds actualOldWeightG. */
+    newExceedsActualOld: boolean;
     /** Lao message to show beside the Save button; null when balanced. */
     messageLo: string | null;
 }
